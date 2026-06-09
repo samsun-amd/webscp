@@ -32,9 +32,17 @@ webscp does **not** ask machine A to talk to machine B directly. Instead:
 
 - Two file panes; each connects to an endpoint from `~/note/ssh_remote.json`
   (or an ad-hoc ip/user/password target).
+- **`localhost (this machine)`** is always offered as an endpoint: the hub's own
+  filesystem can be a drag source or destination (local→remote upload,
+  remote→local download, local→local copy).
 - Inventory endpoints include servers' BMC / `host<N>` / `smc` sub-targets,
   resolved exactly like `sshm` (single BMC jump where needed).
-- Drag a file/dir from one pane to the other to copy it (remote → remote relay).
+- **No-SFTP endpoints work too.** Embedded sshds without an SFTP subsystem
+  (e.g. a BusyBox SMC) are detected automatically and fall back to binary-safe
+  `exec` streaming (`cat` / `cat > file`), so listing and transfers still work —
+  no `base64`, no truncation. SFTP endpoints keep using SFTP unchanged.
+- Drag a file/dir from one pane to the other to copy it (relayed through the
+  hub; any mix of SFTP and no-SFTP ends works).
 - Live per-transfer byte progress over WebSocket, with cancel.
 - SFTP baseline means Windows endpoints work without special shell handling.
 
@@ -124,11 +132,22 @@ ln -sfn "$HOME/github/ssh-manager/packages/core" node_modules/@ssh-manager/core
 npm run build
 
 # 3. Run
-./scripts/start.sh           # background, logs to ~/github/webscp/webscp.log
+./scripts/start.sh           # background; prints the URL, logs to webscp.log
 #   or: npm start            # foreground
-./scripts/status.sh
+./scripts/status.sh          # running? which PID / port?
 ./scripts/stop.sh
 ```
+
+`start.sh` waits for the server to bind and then prints the address, e.g.:
+
+```
+webscp started (PID 12345)
+  URL:  http://127.0.0.1:8088
+  Logs: /home/you/github/webscp/webscp.log
+```
+
+If it fails to bind, the script prints the tail of `webscp.log` and exits
+non-zero instead of leaving a dead PID file behind.
 
 ## Configuration (env vars, no hardcoding)
 
@@ -146,19 +165,76 @@ default.
 
 ## Run as a service (systemd)
 
-`deploy.sh` installs and enables the unit for you. To (re)install by hand:
+`deploy.sh` installs and enables the unit for you, so most people never touch
+this section. Read it if you want to understand or hand-edit the unit — in
+particular **how the paths get set**, since systemd needs absolute paths and
+cannot expand `~`.
+
+### How the unit file is generated (paths explained)
+
+The repo ships a **template**, not a ready unit:
+`systemd/webscp.service.template`. It contains placeholders that
+`scripts/install-systemd.sh` fills in at install time:
+
+| Placeholder | Replaced with | How it's derived |
+|---|---|---|
+| `__APP_DIR__` | absolute path to this checkout (e.g. `/home/you/github/webscp`) | computed from the script's own location — no hardcoding |
+| `__USER__` | the user who ran the installer | `id -un` |
+| `__SSH_REMOTE_JSON_ENV__` | an `Environment=SSH_REMOTE_JSON=…` line, or removed | added only if `SSH_REMOTE_JSON` was set when you ran the installer |
+
+`__APP_DIR__` becomes both `WorkingDirectory` and the path in
+`ExecStart=/usr/bin/env node __APP_DIR__/dist/server/index.js`. **This is why the
+service must be (re)installed if you move or rename the checkout** — the absolute
+path is baked into the installed unit at `/etc/systemd/system/webscp.service`.
+
+The rendered unit also sets `Environment=WEBSCP_HOST=127.0.0.1` and
+`Environment=WEBSCP_PORT=8088`. Change those lines (see below) to bind elsewhere.
+
+### Install / reinstall by hand
 
 ```bash
-~/github/webscp/scripts/install-systemd.sh   # renders the template with this path + your user
+# default inventory (~/note/ssh_remote.json):
+~/github/webscp/scripts/install-systemd.sh
+
+# custom inventory path — export it FIRST so it gets baked into the unit:
+SSH_REMOTE_JSON=~/note/other.json ~/github/webscp/scripts/install-systemd.sh
 ```
 
-Operate it:
+The installer runs `npm run build` if `dist/` is missing, renders the template,
+copies it to `/etc/systemd/system/webscp.service` (needs `sudo`), then
+`daemon-reload` + `enable --now`.
+
+### Operate it
 
 ```bash
 systemctl status webscp
 sudo systemctl restart webscp        # after pulling new code + npm run build
 sudo systemctl stop webscp
-sudo systemctl disable webscp
+sudo systemctl disable webscp        # stop it starting at boot
+```
+
+### Editing the installed unit directly
+
+To tweak port/host/inventory without reinstalling:
+
+```bash
+sudo systemctl edit --full webscp     # opens the installed unit in your editor
+# change e.g. Environment=WEBSCP_PORT=9090, save, then:
+sudo systemctl daemon-reload
+sudo systemctl restart webscp
+```
+
+> If you change `WEBSCP_PORT` here, also update any `ssh -L` tunnel and the URL
+> you open in the browser.
+
+### After moving the checkout
+
+The unit holds an absolute `__APP_DIR__`. If you `mv` the repo, just re-run the
+installer — it re-derives the path and overwrites the unit:
+
+```bash
+~/github/webscp/scripts/install-systemd.sh
+sudo systemctl restart webscp
 ```
 
 ## Reading logs
@@ -204,6 +280,16 @@ transfer row) and in the log.
 - **Inventory edits not showing up.** The server caches `ssh_remote.json`. Click
   **reload inventory** in the header (or `POST /api/reload`) to re-read the file.
 
+- **An SMC / embedded endpoint lists but feels slower.** Endpoints whose sshd has
+  no SFTP subsystem use the `exec` fallback (`cat`-based streaming over a shell
+  channel) instead of SFTP. This is expected and still binary-safe. If such an
+  endpoint *fails* to list, confirm it has the basic tools the fallback needs on
+  `PATH` (`ls`/`stat`/`find`/`cat`); a stripped BusyBox usually has them.
+
+- **`localhost (this machine)` is missing from the dropdown.** It's injected by
+  the server, not read from inventory — if it's absent you're running an old
+  build. Rebuild (`npm run build`) and restart the service/process.
+
 ## Security note
 
 The MVP has **no authentication**. It is meant to run on a local hub that no one
@@ -215,5 +301,3 @@ messages. Before exposing the port to anything beyond `localhost`:
   (and ideally TLS) in front of it — anyone who can reach the port gets full,
   unauthenticated SFTP access to every endpoint in your inventory.
 - Prefer an SSH tunnel (`ssh -L 8088:127.0.0.1:8088 hub`) over binding publicly.
-</content>
-</invoke>

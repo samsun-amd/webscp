@@ -1,8 +1,11 @@
 // Wire types shared between the webscp server and browser client.
 
 export interface EndpointRef {
-  /** "inventory" => resolve via ssh_remote.json; "adhoc" => explicit creds. */
-  source: 'inventory' | 'adhoc';
+  /**
+   * "inventory" => resolve via ssh_remote.json; "adhoc" => explicit creds;
+   * "local" => the hub machine itself (Node fs, no SSH).
+   */
+  source: 'inventory' | 'adhoc' | 'local';
   /** For inventory: selector (name/num/ip). */
   selector?: string;
   /** For inventory: optional sub-target (bmc / smc / hostN). */

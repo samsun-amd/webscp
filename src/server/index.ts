@@ -1,5 +1,7 @@
 import * as http from 'http';
 import * as path from 'path';
+import * as fs from 'fs';
+import * as os from 'os';
 import express from 'express';
 import { WebSocketServer, WebSocket } from 'ws';
 import { SshPool, RemoteFs, TransferEngine } from '@ssh-manager/core';
@@ -10,6 +12,52 @@ import {
   WsServerMessage,
 } from '../shared/types';
 import { getInventory, reloadInventory, resolveRef } from './endpoints';
+
+const LOCAL_OS: 'posix' | 'windows' = process.platform === 'win32' ? 'windows' : 'posix';
+
+function isLocal(ep: EndpointRef | undefined): boolean {
+  return !!ep && ep.source === 'local';
+}
+
+/** Expand a leading `~` against the hub's own home directory. */
+function localExpandHome(p: string): string {
+  const home = os.homedir();
+  if (p === '~') return home;
+  if (p.startsWith('~/') || p.startsWith('~\\')) return path.join(home, p.slice(2));
+  return p;
+}
+
+/** Directory listing on the hub machine itself, shaped like a remote list. */
+function localList(reqPath: string): ListResponse {
+  const cwd = path.resolve(localExpandHome(reqPath || '~'));
+  const dirents = fs.readdirSync(cwd, { withFileTypes: true });
+  const entries = dirents
+    .filter((d) => !d.name.startsWith('.'))
+    .map((d) => {
+      const full = path.join(cwd, d.name);
+      let type: 'file' | 'dir' | 'symlink' | 'other' = 'other';
+      let size = 0;
+      let mtime: number | null = null;
+      try {
+        const st = fs.statSync(full);
+        if (st.isDirectory()) type = 'dir';
+        else if (st.isFile()) type = 'file';
+        else if (st.isSymbolicLink()) type = 'symlink';
+        size = st.size;
+        mtime = st.mtimeMs;
+      } catch {
+        if (d.isDirectory()) type = 'dir';
+        else if (d.isFile()) type = 'file';
+        else if (d.isSymbolicLink()) type = 'symlink';
+      }
+      return { name: d.name, path: full, type, size, mtime };
+    });
+  entries.sort((a, b) => {
+    if (a.type !== b.type) return a.type === 'dir' ? -1 : 1;
+    return a.name.localeCompare(b.name);
+  });
+  return { cwd, os: LOCAL_OS, entries };
+}
 
 const PORT = Number(process.env.WEBSCP_PORT) || 8088;
 const HOST = process.env.WEBSCP_HOST || '127.0.0.1';
@@ -36,6 +84,8 @@ app.get('/api/endpoints', (_req, res) => {
     const summaries = inv.list();
     // Expand server nodes into selectable sub-targets (bmc / hosts / smc).
     const options: Array<{ label: string; ref: EndpointRef }> = [];
+    // The hub machine itself is always available as a source/destination.
+    options.push({ label: 'localhost (this machine)', ref: { source: 'local' } });
     for (const node of inv.raw()) {
       if (node.type === 'client') {
         options.push({ label: `${node.name} (client)`, ref: { source: 'inventory', selector: node.name } });
@@ -81,6 +131,9 @@ app.post('/api/connect-test', async (req, res) => {
 // Directory listing.
 app.post('/api/list', async (req, res) => {
   try {
+    if (isLocal(req.body.endpoint as EndpointRef)) {
+      return res.json(localList(req.body.path || '~'));
+    }
     const ep = resolveRef(req.body.endpoint as EndpointRef);
     const reqPath: string = req.body.path || '~';
     const out = await pool.withSession(ep, async (session) => {
@@ -108,9 +161,13 @@ app.post('/api/list', async (req, res) => {
 
 app.post('/api/mkdir', async (req, res) => {
   try {
-    const ep = resolveRef(req.body.endpoint as EndpointRef);
     const dir: string = req.body.path;
     if (!dir) return res.status(400).json({ error: 'path required' });
+    if (isLocal(req.body.endpoint as EndpointRef)) {
+      fs.mkdirSync(localExpandHome(dir), { recursive: true });
+      return res.json({ ok: true });
+    }
+    const ep = resolveRef(req.body.endpoint as EndpointRef);
     await pool.withSession(ep, async (s) => new RemoteFs(s).mkdirp(dir));
     res.json({ ok: true });
   } catch (e) {
@@ -120,9 +177,13 @@ app.post('/api/mkdir', async (req, res) => {
 
 app.post('/api/delete', async (req, res) => {
   try {
-    const ep = resolveRef(req.body.endpoint as EndpointRef);
     const target: string = req.body.path;
     if (!target) return res.status(400).json({ error: 'path required' });
+    if (isLocal(req.body.endpoint as EndpointRef)) {
+      fs.rmSync(localExpandHome(target), { recursive: true, force: true });
+      return res.json({ ok: true });
+    }
+    const ep = resolveRef(req.body.endpoint as EndpointRef);
     await pool.withSession(ep, async (s) => new RemoteFs(s).remove(target));
     res.json({ ok: true });
   } catch (e) {
@@ -168,29 +229,74 @@ wss.on('connection', (ws) => {
       activeJobs.set(id, ctrl);
       const { src, dst } = msg.payload;
       const recursive = msg.payload.recursive ?? true;
+      const srcLocal = isLocal(src.endpoint);
+      const dstLocal = isLocal(dst.endpoint);
+      const onProgress = (p: { bytes: number; total: number | null; file: string }) =>
+        send(ws, { type: 'progress', id, bytes: p.bytes, total: p.total, file: p.file });
 
       try {
-        const srcEp = resolveRef(src.endpoint);
-        const dstEp = resolveRef(dst.endpoint);
         const mode: 'direct' | 'relay' = 'relay';
-        const label = `${srcEp.id}:${basenameLoose(src.path)} -> ${dstEp.id}`;
-        send(ws, { type: 'job', id, mode, label });
 
-        await pool.withSession(srcEp, async (srcSession) =>
-          pool.withSession(dstEp, async (dstSession) => {
-            const srcFs = new RemoteFs(srcSession);
-            const srcResolved = await srcFs.expandHome(src.path);
-            const base = srcFs.path.basename(srcResolved);
+        if (srcLocal && dstLocal) {
+          // Both ends are the hub: a plain local filesystem copy.
+          const srcResolved = path.resolve(localExpandHome(src.path));
+          const base = path.basename(srcResolved);
+          const dstPath = path.join(path.resolve(localExpandHome(dst.dir)), base);
+          send(ws, { type: 'job', id, mode, label: `local:${base} -> local` });
+          fs.cpSync(srcResolved, dstPath, { recursive });
+        } else if (srcLocal) {
+          // Local -> remote: upload from the hub.
+          const dstEp = resolveRef(dst.endpoint);
+          const srcResolved = path.resolve(localExpandHome(src.path));
+          const base = path.basename(srcResolved);
+          send(ws, { type: 'job', id, mode, label: `local:${base} -> ${dstEp.id}` });
+          await pool.withSession(dstEp, async (dstSession) => {
             const dstFs = new RemoteFs(dstSession);
             const dstDir = await dstFs.expandHome(dst.dir);
             const dstPath = dstFs.path.join(dstDir, base);
-            await engine.remoteToRemote(srcSession, srcResolved, dstSession, dstPath, {
+            await engine.hubToRemote(srcResolved, dstSession, dstPath, {
               recursive,
               signal: ctrl.signal,
-              onProgress: (p) => send(ws, { type: 'progress', id, bytes: p.bytes, total: p.total, file: p.file }),
+              onProgress,
             });
-          }),
-        );
+          });
+        } else if (dstLocal) {
+          // Remote -> local: download to the hub.
+          const srcEp = resolveRef(src.endpoint);
+          send(ws, { type: 'job', id, mode, label: `${srcEp.id}:${basenameLoose(src.path)} -> local` });
+          await pool.withSession(srcEp, async (srcSession) => {
+            const srcFs = new RemoteFs(srcSession);
+            const srcResolved = await srcFs.expandHome(src.path);
+            const base = srcFs.path.basename(srcResolved);
+            const dstPath = path.join(path.resolve(localExpandHome(dst.dir)), base);
+            await engine.remoteToHub(srcSession, srcResolved, dstPath, {
+              recursive,
+              signal: ctrl.signal,
+              onProgress,
+            });
+          });
+        } else {
+          // Remote -> remote: relay through the hub.
+          const srcEp = resolveRef(src.endpoint);
+          const dstEp = resolveRef(dst.endpoint);
+          const label = `${srcEp.id}:${basenameLoose(src.path)} -> ${dstEp.id}`;
+          send(ws, { type: 'job', id, mode, label });
+          await pool.withSession(srcEp, async (srcSession) =>
+            pool.withSession(dstEp, async (dstSession) => {
+              const srcFs = new RemoteFs(srcSession);
+              const srcResolved = await srcFs.expandHome(src.path);
+              const base = srcFs.path.basename(srcResolved);
+              const dstFs = new RemoteFs(dstSession);
+              const dstDir = await dstFs.expandHome(dst.dir);
+              const dstPath = dstFs.path.join(dstDir, base);
+              await engine.remoteToRemote(srcSession, srcResolved, dstSession, dstPath, {
+                recursive,
+                signal: ctrl.signal,
+                onProgress,
+              });
+            }),
+          );
+        }
         send(ws, { type: 'done', id });
       } catch (e) {
         send(ws, { type: 'error', id, message: e instanceof Error ? e.message : String(e) });
