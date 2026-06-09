@@ -1,0 +1,24 @@
+{
+  "name": "webscp",
+  "version": "0.1.0",
+  "description": "WinSCP-style two-pane web UI for cross-machine SCP/SFTP transfers, built on @ssh-manager/core.",
+  "license": "MIT",
+  "main": "dist/server/index.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/server/index.js",
+    "dev": "tsc -p tsconfig.json && node dist/server/index.js",
+    "test": "node --test \"test/**/*.test.js\"",
+    "clean": "rm -rf dist"
+  },
+  "dependencies": {
+    "express": "^4.21.0",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/express": "^4.17.21",
+    "@types/node": "^22.10.0",
+    "@types/ws": "^8.5.13",
+    "typescript": "^5.7.0"
+  }
+}

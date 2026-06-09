@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>webscp</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <header>
+    <h1>webscp</h1>
+    <span id="conn-status" class="status">ws: connecting…</span>
+    <button id="reload-btn" title="Reload ssh_remote.json">reload inventory</button>
+  </header>
+
+  <main>
+    <section class="pane" id="pane-left" data-side="left">
+      <div class="pane-head">
+        <select class="endpoint-select"></select>
+        <input class="path-input" type="text" placeholder="~" />
+        <button class="go-btn">go</button>
+        <button class="mkdir-btn" title="New folder">mkdir</button>
+      </div>
+      <div class="breadcrumb"></div>
+      <ul class="file-list"></ul>
+      <div class="pane-msg"></div>
+    </section>
+
+    <section class="pane" id="pane-right" data-side="right">
+      <div class="pane-head">
+        <select class="endpoint-select"></select>
+        <input class="path-input" type="text" placeholder="~" />
+        <button class="go-btn">go</button>
+        <button class="mkdir-btn" title="New folder">mkdir</button>
+      </div>
+      <div class="breadcrumb"></div>
+      <ul class="file-list"></ul>
+      <div class="pane-msg"></div>
+    </section>
+  </main>
+
+  <section id="queue">
+    <h2>Transfers</h2>
+    <ul id="queue-list"></ul>
+  </section>
+
+  <script src="app.js"></script>
+</body>
+</html>

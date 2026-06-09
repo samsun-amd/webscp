@@ -1,0 +1,20 @@
+[Unit]
+Description=webscp two-pane SCP/SFTP web UI
+After=network.target
+
+[Service]
+Type=simple
+# Replace __APP_DIR__ and __USER__ on install (see scripts/install-systemd.sh).
+WorkingDirectory=__APP_DIR__
+ExecStart=/usr/bin/env node __APP_DIR__/dist/server/index.js
+Restart=on-failure
+RestartSec=3
+User=__USER__
+Environment=WEBSCP_HOST=127.0.0.1
+Environment=WEBSCP_PORT=8088
+# install-systemd.sh fills this in only when SSH_REMOTE_JSON is set at install
+# time; otherwise the line is removed and core falls back to ~/note/ssh_remote.json.
+__SSH_REMOTE_JSON_ENV__
+
+[Install]
+WantedBy=multi-user.target
