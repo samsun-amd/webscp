@@ -1,15 +1,18 @@
 import { Endpoint, Inventory, adhocEndpoint } from '@ssh-manager/core';
 import { EndpointRef } from '../shared/types';
+import { loadInventory, reloadConfig } from './config';
 
 let cached: Inventory | null = null;
 
 export function getInventory(): Inventory {
-  if (!cached) cached = Inventory.load();
+  if (!cached) cached = loadInventory();
   return cached;
 }
 
 export function reloadInventory(): Inventory {
-  cached = Inventory.load();
+  // Re-read config.json too, so inline edits and path changes both take effect.
+  reloadConfig();
+  cached = loadInventory();
   return cached;
 }
 

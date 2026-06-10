@@ -10,7 +10,8 @@
   <header>
     <h1>webscp</h1>
     <span id="conn-status" class="status">ws: connecting…</span>
-    <button id="reload-btn" title="Reload ssh_remote.json">reload inventory</button>
+    <button id="manage-btn" title="Add, edit or remove saved machines">manage nodes</button>
+    <button id="reload-btn" title="Re-read config.json">reload inventory</button>
   </header>
 
   <main>
@@ -19,7 +20,9 @@
         <select class="endpoint-select"></select>
         <input class="path-input" type="text" placeholder="~" />
         <button class="go-btn">go</button>
+        <button class="refresh-btn" title="Reload this pane">refresh</button>
         <button class="mkdir-btn" title="New folder">mkdir</button>
+        <button class="adhoc-btn" title="Connect by typing credentials">ad-hoc</button>
       </div>
       <div class="breadcrumb"></div>
       <ul class="file-list"></ul>
@@ -31,7 +34,9 @@
         <select class="endpoint-select"></select>
         <input class="path-input" type="text" placeholder="~" />
         <button class="go-btn">go</button>
+        <button class="refresh-btn" title="Reload this pane">refresh</button>
         <button class="mkdir-btn" title="New folder">mkdir</button>
+        <button class="adhoc-btn" title="Connect by typing credentials">ad-hoc</button>
       </div>
       <div class="breadcrumb"></div>
       <ul class="file-list"></ul>
@@ -40,9 +45,17 @@
   </main>
 
   <section id="queue">
-    <h2>Transfers</h2>
+    <div class="queue-head">
+      <h2>Transfers</h2>
+      <button id="clear-queue-btn" title="Remove finished transfers">clear</button>
+    </div>
     <ul id="queue-list"></ul>
   </section>
+
+  <!-- Modal host: populated by app.js (manage nodes / ad-hoc connect). -->
+  <div id="modal-overlay" class="modal-overlay hidden">
+    <div id="modal" class="modal" role="dialog" aria-modal="true"></div>
+  </div>
 
   <script src="app.js"></script>
 </body>

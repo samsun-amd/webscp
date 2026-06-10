@@ -40,7 +40,10 @@ GITHUB_DIR="$(dirname "$WEBSCP_DIR")"
 CORE_DIR="${SSH_MANAGER_CORE:-$GITHUB_DIR/ssh-manager/packages/core}"
 CORE_DIR="$(cd "$CORE_DIR" 2>/dev/null && pwd || echo "$CORE_DIR")"
 
-# ssh_remote.json: honor SSH_REMOTE_JSON override, else default to ~/note.
+# Inventory sources, in precedence order:
+#   1. webscp's own config.json (preferred; holds inline inventory + server cfg)
+#   2. legacy fallback: $SSH_REMOTE_JSON, else ~/note/ssh_remote.json
+CONFIG_JSON="${WEBSCP_CONFIG:-$WEBSCP_DIR/config.json}"
 INVENTORY="${SSH_REMOTE_JSON:-$HOME/note/ssh_remote.json}"
 
 INSTALL_SYSTEMD=1
@@ -68,19 +71,28 @@ info "node $(node -v), npm $(npm -v)"
   or point at an existing checkout:
     SSH_MANAGER_CORE=/path/to/ssh-manager/packages/core $0"
 
-# --- 2. ssh_remote.json check ---
-if [[ -r "$INVENTORY" ]]; then
+# --- 2. inventory check (config.json preferred, ssh_remote.json fallback) ---
+if [[ -r "$CONFIG_JSON" ]]; then
+  COUNT="$(node -e '
+    const c = JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));
+    if (Array.isArray(c.inventory)) { console.log(c.inventory.length); }
+    else if (c.inventoryPath) { console.log("via inventoryPath"); }
+    else { console.log("0"); }
+  ' "$CONFIG_JSON" 2>/dev/null)" || die "config.json exists but is not valid JSON: $CONFIG_JSON"
+  info "Config OK: $CONFIG_JSON (inventory: $COUNT)"
+elif [[ -r "$INVENTORY" ]]; then
   if node -e 'JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"))' "$INVENTORY" 2>/dev/null; then
     COUNT="$(node -e 'console.log(JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).length)' "$INVENTORY" 2>/dev/null || echo '?')"
-    info "Inventory OK: $INVENTORY ($COUNT nodes)"
+    info "Inventory OK (fallback): $INVENTORY ($COUNT nodes)"
+    warn "No config.json found; using legacy $INVENTORY."
+    warn "Consider: cp $WEBSCP_DIR/config.example.json $CONFIG_JSON"
   else
     die "Inventory exists but is not valid JSON: $INVENTORY"
   fi
 else
-  warn "Inventory not found at: $INVENTORY"
-  warn "webscp needs the same ssh_remote.json that sshm uses."
-  warn "Create it (e.g. ~/note/ssh_remote.json) or export SSH_REMOTE_JSON=/path/to/it,"
-  warn "then re-run this script. Continuing the build anyway…"
+  warn "No inventory source found."
+  warn "Create $CONFIG_JSON (copy config.example.json) with your nodes,"
+  warn "or provide the legacy $INVENTORY. Continuing the build anyway…"
 fi
 
 # --- 3. build @ssh-manager/core ---

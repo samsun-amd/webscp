@@ -25,18 +25,29 @@ webscp does **not** ask machine A to talk to machine B directly. Instead:
 - A drag from pane A to pane B copies a file by **relaying through the hub** over
   SFTP — bytes stream A → hub → B with no spill to local disk. This works no
   matter the OS of either side and even when A and B cannot reach each other.
-- Endpoints come from the same `~/note/ssh_remote.json` that `sshm` uses, so
-  servers expose their `bmc` / `host<N>` / `smc` sub-targets automatically.
+- Endpoints come from webscp's own `config.json` (copy `config.example.json` to
+  start). Servers expose their `bmc` / `host<N>` / `smc` sub-targets
+  automatically. If no `config.json` exists, webscp falls back to the same
+  `~/note/ssh_remote.json` that `sshm` uses.
 
 ## Features
 
-- Two file panes; each connects to an endpoint from `~/note/ssh_remote.json`
+- Two file panes; each connects to an endpoint from `config.json`
   (or an ad-hoc ip/user/password target).
+- **Manage nodes in the browser.** The `manage nodes` button opens a form-based
+  editor to create / edit / delete saved machines — no hand-editing JSON.
+  Passwords can be set but are never displayed (editing shows `unchanged`; an
+  empty password field keeps the stored secret).
+- **Ad-hoc connect.** The per-pane `ad-hoc` button connects by typing
+  host / user / password directly (with an optional jump host for BMC-style
+  two-stage hops). After a successful connect you're asked whether to save it
+  into `config.json`.
 - **`localhost (this machine)`** is always offered as an endpoint: the hub's own
   filesystem can be a drag source or destination (local→remote upload,
   remote→local download, local→local copy).
 - Inventory endpoints include servers' BMC / `host<N>` / `smc` sub-targets,
-  resolved exactly like `sshm` (single BMC jump where needed).
+  resolved exactly like `sshm` (single BMC jump where needed). A server's SMC is
+  declared inline as a `smc` block on the server node (see Configuration).
 - **No-SFTP endpoints work too.** Embedded sshds without an SFTP subsystem
   (e.g. a BusyBox SMC) are detected automatically and fall back to binary-safe
   `exec` streaming (`cat` / `cat > file`), so listing and transfers still work —
@@ -49,8 +60,8 @@ webscp does **not** ask machine A to talk to machine B directly. Instead:
 ## Requirements
 
 - Node 18+ (developed on Node 22).
-- `~/note/ssh_remote.json` present (same file `sshm` uses). Override with the
-  `SSH_REMOTE_JSON` environment variable.
+- A `config.json` (copy from `config.example.json`). If absent, webscp falls
+  back to `$SSH_REMOTE_JSON` or `~/note/ssh_remote.json`. See **Configuration**.
 - The `ssh-manager` repo checked out so `@ssh-manager/core` can be built and
   linked (see below).
 
@@ -149,19 +160,83 @@ webscp started (PID 12345)
 If it fails to bind, the script prints the tail of `webscp.log` and exits
 non-zero instead of leaving a dead PID file behind.
 
-## Configuration (env vars, no hardcoding)
+## Configuration
+
+### `config.json` (remote info + server binding)
+
+webscp keeps all connection details and server settings in its own
+`config.json` at the repo root. **It holds private credentials and is
+git-ignored** — commit `config.example.json` instead and copy it to start:
+
+```bash
+cp config.example.json config.json
+# then edit config.json with your real nodes
+```
+
+Structure:
+
+```jsonc
+{
+  "server": {
+    "allowRemoteAccess": false,  // false = loopback only (prod); true = reachable from other machines (testing)
+    "port": 8088
+  },
+  "inventory": [
+    { "type": "client", "name": "...", "ip": "...", "user": "...", "pass": "..." },
+    {
+      "type": "server", "name": "...",
+      "bmc":   { "ip": "...", "user": "...", "pass": "..." },
+      "smc":   { "ip": "...", "user": "...", "pass": "..." },   // optional, reached via the BMC jump
+      "hosts": [ { "ip": "...", "user": "...", "pass": "..." } ] // reachable directly (no jump)
+    }
+  ]
+}
+```
+
+A node is either a `client` (direct SSH) or a `server`. A server bundles its
+`bmc`, an optional `smc`, and any `hosts`. The BMC and hosts are reached
+directly; only the SMC sits on an internal network and is reached through a BMC
+jump — which is why the SMC lives inside the server node rather than as a
+separate entry. The SMC sub-target only appears in the UI when the server has an
+`smc` block. (This differs slightly from `sshm`'s standalone `smc` entry; the
+embedded form is what webscp uses.)
+
+You normally won't edit this file by hand — use the **manage nodes** button in
+the UI, which fills in the right shape and keeps passwords out of the browser.
+
+**Opening the service to other machines.** By default webscp binds to
+`127.0.0.1` and is reachable only from the hub itself. To test from another
+machine, set `"allowRemoteAccess": true` in `server` — it then binds `0.0.0.0`
+(all interfaces). Leave it `false` for production. The server prints a warning at
+startup whenever remote access is on, because **there is no authentication**
+(see Security). For finer control you can instead set `server.host` to a specific
+address, which overrides `allowRemoteAccess`.
+
+**Inventory resolution precedence:**
+
+1. `config.json` → `inventory` (inline nodes) — preferred
+2. `config.json` → `inventoryPath` (path to an external JSON array, `~` allowed)
+3. `$SSH_REMOTE_JSON` environment variable
+4. `~/note/ssh_remote.json` (legacy default)
+
+This keeps backward compatibility: with no `config.json`, webscp behaves exactly
+as before.
+
+### Environment variables (override config.json)
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `WEBSCP_HOST` | `127.0.0.1` | Bind address (keep it loopback — see Security) |
-| `WEBSCP_PORT` | `8088` | Port |
-| `SSH_REMOTE_JSON` | `~/note/ssh_remote.json` | Inventory file (runtime) |
+| `WEBSCP_HOST` | from `config.server` (see below) | Explicit bind address; overrides `allowRemoteAccess` |
+| `WEBSCP_PORT` | `config.server.port` → `8088` | Port |
+| `WEBSCP_CONFIG` | `<repo>/config.json` | Config file location |
+| `SSH_REMOTE_JSON` | `~/note/ssh_remote.json` | Fallback inventory file (only used when config.json has no inventory) |
 | `SSH_MANAGER_CORE` | `../ssh-manager/packages/core` | core location (deploy.sh only) |
 
-When run as a service, `WEBSCP_HOST`/`WEBSCP_PORT` are set in the unit file.
-`SSH_REMOTE_JSON` is forwarded into the unit **only** if it was set when you ran
-`install-systemd.sh` / `deploy.sh`; otherwise the service uses the `~/note`
-default.
+Host resolution precedence: `WEBSCP_HOST` > `config.server.host` >
+`config.server.allowRemoteAccess` (`true`→`0.0.0.0`, `false`→`127.0.0.1`) >
+`127.0.0.1`. Port: `WEBSCP_PORT` > `config.server.port` > `8088`. When run as a
+service, `WEBSCP_HOST`/`WEBSCP_PORT` are set in the unit file and therefore take
+precedence over `config.json`.
 
 ## Run as a service (systemd)
 
@@ -277,8 +352,9 @@ transfer row) and in the log.
   "ws: connected". An in-flight drag attempted while disconnected is refused
   with a pane message instead of failing silently.
 
-- **Inventory edits not showing up.** The server caches `ssh_remote.json`. Click
-  **reload inventory** in the header (or `POST /api/reload`) to re-read the file.
+- **Inventory edits not showing up.** The server caches `config.json` (and any
+  fallback inventory file). Click **reload inventory** in the header (or
+  `POST /api/reload`) to re-read it.
 
 - **An SMC / embedded endpoint lists but feels slower.** Endpoints whose sshd has
   no SFTP subsystem use the `exec` fallback (`cat`-based streaming over a shell
@@ -294,10 +370,14 @@ transfer row) and in the log.
 
 The MVP has **no authentication**. It is meant to run on a local hub that no one
 else can reach, bound to `127.0.0.1` by default. SSH passwords are read from
-`ssh_remote.json` into memory only and are never written to logs or error
-messages. Before exposing the port to anything beyond `localhost`:
+`config.json` (or the fallback inventory file) into memory only and are never
+written to logs or error messages. `config.json` itself is git-ignored so
+credentials never reach the repo. Before exposing the port to anything beyond
+`localhost`:
 
-- Do **not** change `WEBSCP_HOST` to `0.0.0.0` without putting authentication
-  (and ideally TLS) in front of it — anyone who can reach the port gets full,
-  unauthenticated SFTP access to every endpoint in your inventory.
+- Do **not** set `server.allowRemoteAccess: true` (or `WEBSCP_HOST=0.0.0.0`)
+  without putting authentication (and ideally TLS) in front of it — anyone who
+  can reach the port gets full, unauthenticated SFTP access to every endpoint in
+  your inventory. The flag exists for testing from another machine on a trusted
+  network; keep it `false` in production.
 - Prefer an SSH tunnel (`ssh -L 8088:127.0.0.1:8088 hub`) over binding publicly.

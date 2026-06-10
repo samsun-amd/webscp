@@ -1,0 +1,46 @@
+{
+  "server": {
+    "allowRemoteAccess": false,
+    "port": 8088
+  },
+  "inventory": [
+    {
+      "type": "client",
+      "name": "example-client",
+      "ip": "10.0.0.10",
+      "port": 22,
+      "user": "ubuntu",
+      "pass": "CHANGE_ME",
+      "os": "posix",
+      "note": "A plain client node reachable directly over SSH."
+    },
+    {
+      "type": "server",
+      "name": "example-server",
+      "note": "A server bundles its BMC, optional SMC, and host NICs; SMC and hosts are reached via the BMC jump.",
+      "bmc": {
+        "ip": "10.0.0.20",
+        "port": 22,
+        "user": "root",
+        "pass": "CHANGE_ME",
+        "os": "posix"
+      },
+      "smc": {
+        "ip": "192.168.31.1",
+        "port": 22,
+        "user": "root",
+        "pass": "CHANGE_ME",
+        "os": "posix"
+      },
+      "hosts": [
+        {
+          "ip": "10.0.0.21",
+          "port": 22,
+          "user": "root",
+          "pass": "CHANGE_ME",
+          "os": "posix"
+        }
+      ]
+    }
+  ]
+}

@@ -17,16 +17,84 @@ function dirname(p) {
   return norm.slice(0, idx);
 }
 
-async function postJSON(url, body) {
-  const res = await fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  });
+async function reqJSON(method, url, body) {
+  const opts = { method, headers: {} };
+  if (body !== undefined) {
+    opts.headers['Content-Type'] = 'application/json';
+    opts.body = JSON.stringify(body);
+  }
+  const res = await fetch(url, opts);
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
   return data;
 }
+function postJSON(url, body) { return reqJSON('POST', url, body); }
+
+// Tiny DOM builder: el('input', {type:'text', class:'x'}, [children]).
+function el(tag, attrs, children) {
+  const node = document.createElement(tag);
+  if (attrs) {
+    for (const [k, v] of Object.entries(attrs)) {
+      if (v == null || v === false) continue;
+      if (k === 'class') node.className = v;
+      else if (k === 'text') node.textContent = v;
+      else if (k.startsWith('on') && typeof v === 'function') node.addEventListener(k.slice(2), v);
+      else node.setAttribute(k, v === true ? '' : String(v));
+    }
+  }
+  for (const c of children || []) {
+    if (c == null) continue;
+    node.appendChild(typeof c === 'string' ? document.createTextNode(c) : c);
+  }
+  return node;
+}
+
+// A labelled credential sub-form (ip / port / user / password). When `cred`
+// has hasPass, the password field shows an "unchanged" placeholder and an empty
+// submit preserves the stored secret server-side.
+function credFields(cred) {
+  const c = cred || {};
+  const ip = el('input', { type: 'text', value: c.ip || '', placeholder: 'ip / host' });
+  const port = el('input', { type: 'number', value: c.port || '', placeholder: '22', min: '1' });
+  const user = el('input', { type: 'text', value: c.user || '', placeholder: 'user' });
+  const pass = el('input', { type: 'password', value: '', placeholder: c.hasPass ? 'unchanged' : 'password' });
+  const wrap = el('div', null, [
+    el('div', { class: 'field-row' }, [
+      el('div', null, [el('label', { text: 'ip / host' }), ip]),
+      el('div', null, [el('label', { text: 'port' }), port]),
+    ]),
+    el('div', { class: 'field-row' }, [
+      el('div', null, [el('label', { text: 'user' }), user]),
+      el('div', null, [el('label', { text: 'password' }), pass]),
+    ]),
+  ]);
+  return {
+    wrap,
+    read() {
+      const out = { ip: ip.value.trim(), user: user.value.trim() };
+      if (port.value) out.port = Number(port.value);
+      if (pass.value) out.pass = pass.value;
+      return out;
+    },
+    hasAny() { return ip.value.trim() || user.value.trim(); },
+  };
+}
+
+// Modal controller around #modal-overlay / #modal.
+const Modal = {
+  overlay: null,
+  box: null,
+  init() {
+    this.overlay = document.getElementById('modal-overlay');
+    this.box = document.getElementById('modal');
+    this.overlay.addEventListener('click', (e) => { if (e.target === this.overlay) this.close(); });
+  },
+  open(contentNode) {
+    this.box.replaceChildren(contentNode);
+    this.overlay.classList.remove('hidden');
+  },
+  close() { this.overlay.classList.add('hidden'); this.box.replaceChildren(); },
+};
 
 // ---- pane model ----
 class Pane {
@@ -43,10 +111,24 @@ class Pane {
     this.os = 'posix';
     this.refreshSeq = 0;
 
+    this.adhocRef = null; // transient ad-hoc endpoint, if active
+
     root.querySelector('.go-btn').addEventListener('click', () => this.refresh());
     this.pathInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') this.refresh(); });
+    // refresh re-lists the current directory, ignoring any unsubmitted edits in
+    // the path box (go navigates to the typed path; refresh reloads where we are).
+    root.querySelector('.refresh-btn').addEventListener('click', () => {
+      this.pathInput.value = this.cwd;
+      this.refresh();
+    });
     root.querySelector('.mkdir-btn').addEventListener('click', () => this.mkdir());
-    this.select.addEventListener('change', () => { this.pathInput.value = '~'; this.refresh(); });
+    root.querySelector('.adhoc-btn').addEventListener('click', () => Adhoc.open(this));
+    this.select.addEventListener('change', () => {
+      // Leaving the ad-hoc slot for a saved endpoint clears the transient ref.
+      if (this.select.value !== 'adhoc') this.adhocRef = null;
+      this.pathInput.value = '~';
+      this.refresh();
+    });
 
     // Drop target.
     root.addEventListener('dragover', (e) => { e.preventDefault(); root.classList.add('drag-over'); });
@@ -67,6 +149,7 @@ class Pane {
   }
 
   currentRef() {
+    if (this.select.value === 'adhoc') return this.adhocRef;
     const idx = this.select.value;
     return this.options[idx] ? this.options[idx].ref : null;
   }
@@ -75,12 +158,31 @@ class Pane {
     this.options = options;
     // Build via DOM (not innerHTML) so an inventory label containing HTML/quotes
     // cannot inject markup into the page.
-    this.select.replaceChildren(...options.map((o, i) => {
+    const opts = options.map((o, i) => {
       const opt = document.createElement('option');
       opt.value = String(i);
       opt.textContent = o.label;
       return opt;
-    }));
+    });
+    // Persist the ad-hoc slot at the end if one is active.
+    if (this.adhocRef) {
+      const ao = document.createElement('option');
+      ao.value = 'adhoc';
+      ao.textContent = this.adhocLabel || 'ad-hoc connection';
+      opts.push(ao);
+    }
+    this.select.replaceChildren(...opts);
+    if (this.adhocRef) this.select.value = 'adhoc';
+  }
+
+  // Adopt a transient ad-hoc endpoint, add it as the selected option, and list.
+  useAdhoc(ref, label) {
+    this.adhocRef = ref;
+    this.adhocLabel = label;
+    this.setOptions(this.options);
+    this.select.value = 'adhoc';
+    this.pathInput.value = '~';
+    this.refresh();
   }
 
   setMsg(text, isError) {
@@ -169,6 +271,260 @@ class Pane {
   }
 }
 
+// ---- node manager (config.json CRUD) ----
+const NodeManager = {
+  async openList() {
+    let nodes = [];
+    try {
+      const r = await reqJSON('GET', '/api/nodes');
+      nodes = r.nodes || [];
+    } catch (e) {
+      Modal.open(el('div', null, [
+        el('div', { class: 'modal-head' }, [el('h2', { text: 'Manage nodes' }), el('button', { class: 'close-x', text: '×', onclick: () => Modal.close() })]),
+        el('div', { class: 'modal-err', text: e.message }),
+      ]));
+      return;
+    }
+    const rows = el('ul', { class: 'node-rows' }, nodes.map((n) => {
+      const ep = n.type === 'client'
+        ? `${n.user || ''}@${n.ip || ''}`
+        : `bmc ${n.bmc ? n.bmc.ip : '?'}` + (n.smc ? `, smc ${n.smc.ip}` : '') + (n.hosts && n.hosts.length ? `, ${n.hosts.length} host(s)` : '');
+      return el('li', null, [
+        el('span', { class: 'node-type', text: n.type }),
+        el('span', { class: 'node-name', text: n.name }),
+        el('span', { class: 'node-ep', text: ep }),
+        el('button', { text: 'edit', onclick: () => this.openForm(n) }),
+        el('button', { class: 'danger', text: 'delete', onclick: () => this.del(n.name) }),
+      ]);
+    }));
+    Modal.open(el('div', null, [
+      el('div', { class: 'modal-head' }, [
+        el('h2', { text: 'Manage nodes' }),
+        el('button', { class: 'close-x', text: '×', onclick: () => Modal.close() }),
+      ]),
+      rows,
+      el('div', { class: 'modal-actions' }, [
+        el('button', { class: 'primary', text: '+ new node', onclick: () => this.openForm(null) }),
+      ]),
+    ]));
+  },
+
+  async del(name) {
+    if (!confirm(`Delete node "${name}"?`)) return;
+    try {
+      await reqJSON('DELETE', `/api/nodes/${encodeURIComponent(name)}`);
+      window.app.loadEndpoints();
+      this.openList();
+    } catch (e) {
+      alert(`Delete failed: ${e.message}`);
+    }
+  },
+
+  // Build the create/edit form. `existing` is a redacted node or null.
+  openForm(existing) {
+    const isEdit = !!existing;
+    const nameInput = el('input', { type: 'text', value: existing ? existing.name : '', placeholder: 'unique name' });
+    const noteInput = el('input', { type: 'text', value: (existing && existing.note) || '', placeholder: 'optional note' });
+    const typeSelect = el('select', null, [
+      el('option', { value: 'client', text: 'client' }),
+      el('option', { value: 'server', text: 'server (bmc / hosts / smc)' }),
+    ]);
+    typeSelect.value = existing ? existing.type : 'client';
+
+    // client section
+    const clientCred = credFields(existing && existing.type === 'client' ? {
+      ip: existing.ip, user: existing.user, port: existing.port, hasPass: existing.hasPass,
+    } : null);
+    const clientSection = el('fieldset', null, [el('legend', { text: 'connection' }), clientCred.wrap]);
+
+    // server section: bmc + hosts + optional smc
+    const bmcCred = credFields(existing && existing.bmc);
+    const bmcSection = el('fieldset', null, [el('legend', { text: 'BMC' }), bmcCred.wrap]);
+
+    const hostsBox = el('div');
+    const hostCreds = [];
+    const addHost = (cred) => {
+      const hc = credFields(cred);
+      const row = el('div', { class: 'host-row' }, [
+        hc.wrap,
+        el('button', { class: 'rm-host', text: '✕', title: 'remove host', onclick: () => { row.remove(); hc._removed = true; } }),
+      ]);
+      hc._row = row;
+      hostCreds.push(hc);
+      hostsBox.appendChild(row);
+    };
+    ((existing && existing.hosts) || []).forEach((h) => addHost(h));
+    const hostsSection = el('fieldset', null, [
+      el('legend', { text: 'hosts (via BMC jump)' }),
+      hostsBox,
+      el('button', { class: 'add-host', text: '+ add host', onclick: () => addHost(null) }),
+    ]);
+
+    const smcEnable = el('input', { type: 'checkbox' });
+    smcEnable.checked = !!(existing && existing.smc);
+    const smcCred = credFields(existing && existing.smc);
+    const smcBody = el('div', { class: existing && existing.smc ? '' : 'hidden' }, [smcCred.wrap]);
+    smcEnable.addEventListener('change', () => smcBody.classList.toggle('hidden', !smcEnable.checked));
+    const smcSection = el('fieldset', null, [
+      el('legend', { text: 'SMC (via BMC jump)' }),
+      el('div', { class: 'toggle-line' }, [smcEnable, el('label', { text: 'this server has an SMC' })]),
+      smcBody,
+    ]);
+
+    const serverWrap = el('div', null, [bmcSection, hostsSection, smcSection]);
+
+    const applyType = () => {
+      const isClient = typeSelect.value === 'client';
+      clientSection.classList.toggle('hidden', !isClient);
+      serverWrap.classList.toggle('hidden', isClient);
+    };
+    typeSelect.addEventListener('change', applyType);
+    applyType();
+
+    const errBox = el('div', { class: 'modal-err' });
+
+    const save = async () => {
+      errBox.textContent = '';
+      const payload = {
+        type: typeSelect.value,
+        name: nameInput.value.trim(),
+        note: noteInput.value.trim() || undefined,
+      };
+      if (typeSelect.value === 'client') {
+        Object.assign(payload, clientCred.read());
+      } else {
+        payload.bmc = bmcCred.read();
+        if (smcEnable.checked && smcCred.hasAny()) payload.smc = smcCred.read();
+        payload.hosts = hostCreds.filter((h) => !h._removed && h.hasAny()).map((h) => h.read());
+      }
+      try {
+        if (isEdit) await reqJSON('PUT', `/api/nodes/${encodeURIComponent(existing.name)}`, payload);
+        else await reqJSON('POST', '/api/nodes', payload);
+        window.app.loadEndpoints();
+        this.openList();
+      } catch (e) {
+        errBox.textContent = e.message;
+      }
+    };
+
+    Modal.open(el('div', null, [
+      el('div', { class: 'modal-head' }, [
+        el('h2', { text: isEdit ? `Edit "${existing.name}"` : 'New node' }),
+        el('button', { class: 'close-x', text: '×', onclick: () => Modal.close() }),
+      ]),
+      el('label', { text: 'name' }), nameInput,
+      el('label', { text: 'type' }), typeSelect,
+      el('label', { text: 'note' }), noteInput,
+      clientSection,
+      serverWrap,
+      errBox,
+      el('div', { class: 'modal-actions' }, [
+        el('button', { class: 'secondary', text: 'back', onclick: () => this.openList() }),
+        el('button', { class: 'primary', text: isEdit ? 'save' : 'create', onclick: save }),
+      ]),
+    ]));
+  },
+};
+
+// ---- ad-hoc connect ----
+const Adhoc = {
+  // Open the form; on success sets the pane's transient endpoint and lists it.
+  // Ad-hoc endpoints are transient by default — they are only written to
+  // config.json when the user ticks "save to config" and supplies a name.
+  open(pane) {
+    const target = credFields(null);
+    const jumpEnable = el('input', { type: 'checkbox' });
+    const jumpCred = credFields(null);
+    const jumpBody = el('div', { class: 'hidden' }, [jumpCred.wrap]);
+    jumpEnable.addEventListener('change', () => jumpBody.classList.toggle('hidden', !jumpEnable.checked));
+
+    const saveEnable = el('input', { type: 'checkbox' });
+    const saveName = el('input', { type: 'text', placeholder: 'node name' });
+    const saveBody = el('div', { class: 'hidden' }, [
+      el('label', { text: 'name to save as' }),
+      saveName,
+    ]);
+    saveEnable.addEventListener('change', () => saveBody.classList.toggle('hidden', !saveEnable.checked));
+
+    const errBox = el('div', { class: 'modal-err' });
+
+    const connect = async () => {
+      errBox.textContent = '';
+      const t = target.read();
+      if (!t.ip || !t.user) { errBox.textContent = 'host and user are required'; return; }
+      const adhoc = { host: t.ip, port: t.port, user: t.user, password: t.pass };
+      if (jumpEnable.checked) {
+        const j = jumpCred.read();
+        if (!j.ip || !j.user) { errBox.textContent = 'jump needs host and user'; return; }
+        adhoc.jump = { host: j.ip, port: j.port, user: j.user, password: j.pass };
+      }
+      // Validate the save fields up front so a connect+save is atomic from the
+      // user's view (no "connected but failed to save name" surprise).
+      const wantSave = saveEnable.checked;
+      const name = saveName.value.trim();
+      if (wantSave && !name) { errBox.textContent = 'enter a name to save, or untick "save to config"'; return; }
+
+      const ref = { source: 'adhoc', adhoc };
+      try {
+        await postJSON('/api/connect-test', { endpoint: ref });
+      } catch (e) {
+        errBox.textContent = `connect failed: ${e.message}`;
+        return;
+      }
+
+      if (wantSave) {
+        try {
+          await postJSON('/api/nodes', adhocToNode(name, adhoc));
+          await window.app.loadEndpoints();
+        } catch (e) {
+          errBox.textContent = `connected, but save failed: ${e.message}`;
+          return;
+        }
+      }
+
+      Modal.close();
+      pane.useAdhoc(ref, `ad-hoc: ${adhoc.user}@${adhoc.host}`);
+    };
+
+    Modal.open(el('div', null, [
+      el('div', { class: 'modal-head' }, [
+        el('h2', { text: 'Ad-hoc connection' }),
+        el('button', { class: 'close-x', text: '×', onclick: () => Modal.close() }),
+      ]),
+      el('fieldset', null, [el('legend', { text: 'target' }), target.wrap]),
+      el('fieldset', null, [
+        el('legend', { text: 'jump (optional, e.g. BMC)' }),
+        el('div', { class: 'toggle-line' }, [jumpEnable, el('label', { text: 'connect via a jump host' })]),
+        jumpBody,
+      ]),
+      el('fieldset', null, [
+        el('legend', { text: 'save' }),
+        el('div', { class: 'toggle-line' }, [saveEnable, el('label', { text: 'save to config (otherwise this connection is temporary)' })]),
+        saveBody,
+      ]),
+      errBox,
+      el('div', { class: 'modal-actions' }, [
+        el('button', { class: 'secondary', text: 'cancel', onclick: () => Modal.close() }),
+        el('button', { class: 'primary', text: 'connect', onclick: connect }),
+      ]),
+    ]));
+  },
+};
+
+// Map an ad-hoc connection to a config node payload: a jumped target becomes a
+// server (bmc = jump, single host = target); a direct one becomes a client.
+function adhocToNode(name, adhoc) {
+  if (adhoc.jump) {
+    return {
+      type: 'server',
+      name,
+      bmc: { ip: adhoc.jump.host, port: adhoc.jump.port, user: adhoc.jump.user, pass: adhoc.jump.password },
+      hosts: [{ ip: adhoc.host, port: adhoc.port, user: adhoc.user, pass: adhoc.password }],
+    };
+  }
+  return { type: 'client', name, ip: adhoc.host, port: adhoc.port, user: adhoc.user, pass: adhoc.password };
+}
+
 // ---- app ----
 class App {
   constructor() {
@@ -179,8 +535,16 @@ class App {
     this.queue = document.getElementById('queue-list');
     this.ws = null;
     this.connectWs();
+    Modal.init();
     document.getElementById('reload-btn').addEventListener('click', () => this.reload());
+    document.getElementById('manage-btn').addEventListener('click', () => NodeManager.openList());
+    document.getElementById('clear-queue-btn').addEventListener('click', () => this.clearQueue());
     this.loadEndpoints();
+  }
+
+  // Remove finished transfers (done/error) from the list; keep active ones.
+  clearQueue() {
+    this.queue.querySelectorAll('li.job-done, li.job-error').forEach((li) => li.remove());
   }
 
   async loadEndpoints() {

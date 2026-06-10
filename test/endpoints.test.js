@@ -18,13 +18,17 @@ const FIXTURE = JSON.parse(
 const invFile = path.join(os.tmpdir(), `webscp-inv-${process.pid}.json`);
 fs.writeFileSync(invFile, JSON.stringify(FIXTURE), 'utf8');
 process.env.SSH_REMOTE_JSON = invFile;
+// Point config.json at a path that does not exist so the loader falls back to
+// SSH_REMOTE_JSON (the repo's real config.json must not leak into this test).
+process.env.WEBSCP_CONFIG = path.join(os.tmpdir(), `webscp-noconfig-${process.pid}.json`);
 
 const { resolveRef } = require('../dist/server/endpoints.js');
 
 test('resolveRef maps an inventory ref (selector + sub) to an Endpoint', () => {
-  const ep = resolveRef({ source: 'inventory', selector: 'server1', sub: 'host1' });
-  assert.strictEqual(ep.id, 'server1/host1');
-  assert.strictEqual(ep.conn.host, '10.0.0.11');
+  // host targets connect directly; only smc carries the BMC jump.
+  const ep = resolveRef({ source: 'inventory', selector: 'server1', sub: 'smc' });
+  assert.strictEqual(ep.id, 'server1/smc');
+  assert.strictEqual(ep.conn.host, '10.0.0.60');
   assert.ok(ep.jump);
   assert.strictEqual(ep.jump.host, '10.0.0.1');
 });

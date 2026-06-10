@@ -12,6 +12,14 @@ import {
   WsServerMessage,
 } from '../shared/types';
 import { getInventory, reloadInventory, resolveRef } from './endpoints';
+import { serverSettings, inventorySourceLabel } from './config';
+import {
+  listNodesRedacted,
+  createNode,
+  updateNode,
+  deleteNode,
+  RawNodeInput,
+} from './configstore';
 
 const LOCAL_OS: 'posix' | 'windows' = process.platform === 'win32' ? 'windows' : 'posix';
 
@@ -59,8 +67,7 @@ function localList(reqPath: string): ListResponse {
   return { cwd, os: LOCAL_OS, entries };
 }
 
-const PORT = Number(process.env.WEBSCP_PORT) || 8088;
-const HOST = process.env.WEBSCP_HOST || '127.0.0.1';
+const { host: HOST, port: PORT, remote: REMOTE } = serverSettings();
 
 const pool = new SshPool({ readyTimeoutMs: 15000, idleTimeoutMs: 60000, maxPerKey: 4 });
 const engine = new TransferEngine();
@@ -70,6 +77,10 @@ app.use(express.json({ limit: '1mb' }));
 app.use(express.static(path.join(__dirname, '../../public')));
 
 function errStatus(e: unknown): number {
+  // configstore errors carry an explicit HTTP status.
+  if (e && typeof e === 'object' && typeof (e as { status?: unknown }).status === 'number') {
+    return (e as { status: number }).status;
+  }
   const msg = e instanceof Error ? e.message : String(e);
   if (/not found|no inventory|ENOENT/i.test(msg)) return 404;
   if (/authentication/i.test(msg)) return 401;
@@ -89,8 +100,6 @@ app.get('/api/endpoints', (_req, res) => {
     for (const node of inv.raw()) {
       if (node.type === 'client') {
         options.push({ label: `${node.name} (client)`, ref: { source: 'inventory', selector: node.name } });
-      } else if (node.type === 'smc') {
-        options.push({ label: `${node.name} (smc, standalone)`, ref: { source: 'inventory', selector: node.name } });
       } else if (node.type === 'server') {
         options.push({ label: `${node.name} / bmc`, ref: { source: 'inventory', selector: node.name, sub: 'bmc' } });
         (node.hosts || []).forEach((_h, i) => {
@@ -99,7 +108,10 @@ app.get('/api/endpoints', (_req, res) => {
             ref: { source: 'inventory', selector: node.name, sub: `host${i + 1}` },
           });
         });
-        options.push({ label: `${node.name} / smc (via bmc)`, ref: { source: 'inventory', selector: node.name, sub: 'smc' } });
+        // The SMC option only exists when the server declares an embedded smc.
+        if (node.smc) {
+          options.push({ label: `${node.name} / smc (via bmc)`, ref: { source: 'inventory', selector: node.name, sub: 'smc' } });
+        }
       }
     }
     res.json({ summaries, options });
@@ -110,6 +122,46 @@ app.get('/api/endpoints', (_req, res) => {
 
 app.post('/api/reload', (_req, res) => {
   try {
+    reloadInventory();
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(errStatus(e)).json({ error: e instanceof Error ? e.message : String(e) });
+  }
+});
+
+// --- node management (config.json CRUD) ---
+// Passwords are never returned; see configstore.redactNode.
+app.get('/api/nodes', (_req, res) => {
+  try {
+    res.json({ nodes: listNodesRedacted() });
+  } catch (e) {
+    res.status(errStatus(e)).json({ error: e instanceof Error ? e.message : String(e) });
+  }
+});
+
+app.post('/api/nodes', (req, res) => {
+  try {
+    createNode(req.body as RawNodeInput);
+    reloadInventory();
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(errStatus(e)).json({ error: e instanceof Error ? e.message : String(e) });
+  }
+});
+
+app.put('/api/nodes/:name', (req, res) => {
+  try {
+    updateNode(req.params.name, req.body as RawNodeInput);
+    reloadInventory();
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(errStatus(e)).json({ error: e instanceof Error ? e.message : String(e) });
+  }
+});
+
+app.delete('/api/nodes/:name', (req, res) => {
+  try {
+    deleteNode(req.params.name);
     reloadInventory();
     res.json({ ok: true });
   } catch (e) {
@@ -316,6 +368,15 @@ function basenameLoose(p: string): string {
 server.listen(PORT, HOST, () => {
   // eslint-disable-next-line no-console
   console.log(`webscp running on http://${HOST}:${PORT}`);
+  // eslint-disable-next-line no-console
+  console.log(`inventory source: ${inventorySourceLabel()}`);
+  if (REMOTE) {
+    // eslint-disable-next-line no-console
+    console.warn(
+      `WARNING: remote access is ENABLED (bound to ${HOST}). There is no ` +
+        `authentication — only use this on a trusted network for testing.`,
+    );
+  }
 });
 
 function shutdown(): void {

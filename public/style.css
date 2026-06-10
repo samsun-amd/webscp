@@ -98,6 +98,16 @@ main {
   overflow-y: auto;
   padding: 8px 16px;
 }
+.queue-head { display: flex; align-items: center; gap: 10px; margin: 0 0 6px; }
+.queue-head h2 { font-size: 13px; margin: 0; color: #57606a; }
+#clear-queue-btn {
+  border: 1px solid #d0d7de;
+  background: #fff;
+  border-radius: 6px;
+  padding: 2px 10px;
+  font-size: 12px;
+  cursor: pointer;
+}
 #queue h2 { font-size: 13px; margin: 0 0 6px; color: #57606a; }
 #queue-list { list-style: none; margin: 0; padding: 0; }
 #queue-list li {
@@ -119,3 +129,98 @@ main {
 .job-cancel { cursor: pointer; border: none; background: none; color: #cf222e; }
 .job-done .bar > div { background: #0969da; }
 .job-error { color: #cf222e; }
+
+/* ---- modal (manage nodes / ad-hoc) ---- */
+.hidden { display: none !important; }
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(27, 31, 36, 0.5);
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 40px 16px;
+  overflow-y: auto;
+  z-index: 100;
+}
+.modal {
+  background: #fff;
+  border-radius: 10px;
+  width: 100%;
+  max-width: 560px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.25);
+  padding: 16px 20px 20px;
+}
+.modal h2 { margin: 0 0 12px; font-size: 16px; }
+.modal-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+.modal-head h2 { margin: 0; flex: 1; }
+.modal .close-x {
+  border: none;
+  background: none;
+  font-size: 20px;
+  cursor: pointer;
+  color: #57606a;
+  line-height: 1;
+}
+.node-rows { list-style: none; margin: 0 0 12px; padding: 0; }
+.node-rows li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border: 1px solid #eaeef2;
+  border-radius: 6px;
+  margin-bottom: 6px;
+}
+.node-rows .node-name { font-weight: 600; }
+.node-rows .node-type {
+  font-size: 11px;
+  color: #fff;
+  background: #57606a;
+  border-radius: 10px;
+  padding: 1px 8px;
+}
+.node-rows .node-ep { flex: 1; font-size: 12px; color: #57606a; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.node-rows button { border: 1px solid #d0d7de; background: #fff; border-radius: 6px; padding: 2px 8px; cursor: pointer; }
+.node-rows button.danger { color: #cf222e; border-color: #f0c3c3; }
+.modal label { display: block; font-size: 12px; color: #57606a; margin: 8px 0 2px; }
+.modal input, .modal select {
+  width: 100%;
+  padding: 5px 7px;
+  border: 1px solid #d0d7de;
+  border-radius: 6px;
+  font-size: 13px;
+}
+.modal fieldset {
+  border: 1px solid #d0d7de;
+  border-radius: 8px;
+  margin: 10px 0;
+  padding: 6px 12px 12px;
+}
+.modal fieldset legend { font-size: 12px; font-weight: 600; color: #1c2128; padding: 0 4px; }
+.field-row { display: flex; gap: 10px; }
+.field-row > div { flex: 1; }
+.modal-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 16px; }
+.modal-actions .primary { background: #1f883d; color: #fff; border: 1px solid #1a7f37; border-radius: 6px; padding: 6px 14px; cursor: pointer; }
+.modal-actions .secondary { background: #fff; border: 1px solid #d0d7de; border-radius: 6px; padding: 6px 14px; cursor: pointer; }
+.host-row { display: flex; gap: 8px; align-items: flex-end; margin-bottom: 6px; }
+.host-row > div { flex: 1; }
+.host-row .rm-host { color: #cf222e; border: 1px solid #f0c3c3; background: #fff; border-radius: 6px; padding: 5px 9px; cursor: pointer; }
+.add-host { border: 1px dashed #d0d7de; background: #fff; border-radius: 6px; padding: 4px 10px; cursor: pointer; font-size: 12px; }
+.modal-err { color: #cf222e; font-size: 13px; min-height: 18px; margin-top: 8px; }
+.toggle-line { display: flex; align-items: center; gap: 6px; margin: 8px 0 0; }
+.toggle-line input { width: auto; }
+.toggle-line label { margin: 0; }
+.save-prompt {
+  display: flex; align-items: center; gap: 8px;
+  background: #ddf4ff; border: 1px solid #b6e3ff;
+  border-radius: 6px; padding: 6px 10px; margin: 6px 10px;
+  font-size: 13px;
+}
+.save-prompt button { border: 1px solid #d0d7de; background: #fff; border-radius: 6px; padding: 2px 10px; cursor: pointer; }
+.save-prompt .yes { background: #1f883d; color: #fff; border-color: #1a7f37; }
