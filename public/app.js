@@ -17,6 +17,26 @@ function dirname(p) {
   return norm.slice(0, idx);
 }
 
+function basename(p) {
+  const norm = p.replace(/\\/g, '/').replace(/\/+$/, '');
+  const idx = norm.lastIndexOf('/');
+  return idx >= 0 ? norm.slice(idx + 1) : norm;
+}
+
+// Insert " (n)" before the extension: report.txt -> report (1).txt.
+function bumpName(name, taken) {
+  const dot = name.lastIndexOf('.');
+  const stem = dot > 0 ? name.slice(0, dot) : name;
+  const ext = dot > 0 ? name.slice(dot) : '';
+  let n = 1;
+  let candidate = `${stem} (${n})${ext}`;
+  while (taken.has(candidate)) {
+    n += 1;
+    candidate = `${stem} (${n})${ext}`;
+  }
+  return candidate;
+}
+
 async function reqJSON(method, url, body) {
   const opts = { method, headers: {} };
   if (body !== undefined) {
@@ -94,6 +114,25 @@ const Modal = {
     this.overlay.classList.remove('hidden');
   },
   close() { this.overlay.classList.add('hidden'); this.box.replaceChildren(); },
+  // Name-conflict dialog. Resolves 'replace' | 'keep-both' | null (cancelled).
+  conflict(name, renamedTo) {
+    return new Promise((resolve) => {
+      const done = (v) => { this.close(); resolve(v); };
+      this.open(el('div', null, [
+        el('div', { class: 'modal-head' }, [
+          el('h2', { text: 'Name already exists' }),
+          el('button', { class: 'close-x', text: '×', onclick: () => done(null) }),
+        ]),
+        el('p', { text: `"${name}" already exists in the destination folder.` }),
+        el('p', { class: 'modal-sub', text: `Keep both saves the new file as "${renamedTo}".` }),
+        el('div', { class: 'modal-actions' }, [
+          el('button', { class: 'secondary', text: 'cancel', onclick: () => done(null) }),
+          el('button', { class: 'danger', text: 'replace', onclick: () => done('replace') }),
+          el('button', { class: 'primary', text: 'keep both', onclick: () => done('keep-both') }),
+        ]),
+      ]));
+    });
+  },
 };
 
 // ---- pane model ----
@@ -109,6 +148,7 @@ class Pane {
     this.options = [];
     this.cwd = '~';
     this.os = 'posix';
+    this.entries = [];
     this.refreshSeq = 0;
 
     this.adhocRef = null; // transient ad-hoc endpoint, if active
@@ -214,6 +254,7 @@ class Pane {
   }
 
   render(entries) {
+    this.entries = entries; // kept for drop-time conflict checks
     this.list.innerHTML = '';
     // Parent dir nav.
     const up = document.createElement('li');
@@ -631,20 +672,39 @@ class App {
     this.panes.right.refresh();
   }
 
-  onDrop(dragged, destPane) {
+  async onDrop(dragged, destPane) {
     const destRef = destPane.currentRef();
     if (!destRef) return;
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
       destPane.setMsg('not connected — transfer aborted (ws reconnecting)', true);
       return;
     }
+    const srcName = basename(dragged.path);
+    // Re-list the destination now so the conflict check uses live remote state,
+    // not whatever the pane happened to show earlier.
+    let taken;
+    try {
+      const live = await postJSON('/api/list', { endpoint: destRef, path: destPane.cwd });
+      taken = new Set(live.entries.map((e) => e.name));
+    } catch (e) {
+      destPane.setMsg(`could not check destination: ${e.message}`, true);
+      return;
+    }
+    let name = srcName;
+    if (taken.has(srcName)) {
+      const renamed = bumpName(srcName, taken);
+      const choice = await Modal.conflict(srcName, renamed);
+      if (choice === null) return; // cancelled
+      name = choice === 'replace' ? srcName : renamed;
+    }
+
     const reqId = `req-${Date.now()}`;
     this.ws.send(JSON.stringify({
       type: 'transfer',
       reqId,
       payload: {
         src: { endpoint: dragged.endpoint, path: dragged.path },
-        dst: { endpoint: destRef, dir: destPane.cwd },
+        dst: { endpoint: destRef, dir: destPane.cwd, name },
         recursive: true,
       },
     }));

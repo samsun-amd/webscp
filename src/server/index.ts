@@ -289,18 +289,23 @@ wss.on('connection', (ws) => {
       try {
         const mode: 'direct' | 'relay' = 'relay';
 
+        const overrideName = msg.payload.dst.name;
+
         if (srcLocal && dstLocal) {
           // Both ends are the hub: a plain local filesystem copy.
           const srcResolved = path.resolve(localExpandHome(src.path));
-          const base = path.basename(srcResolved);
+          const base = overrideName ?? path.basename(srcResolved);
           const dstPath = path.join(path.resolve(localExpandHome(dst.dir)), base);
+          if (dstPath === srcResolved) {
+            throw new Error('source and destination are the same path');
+          }
           send(ws, { type: 'job', id, mode, label: `local:${base} -> local` });
           fs.cpSync(srcResolved, dstPath, { recursive });
         } else if (srcLocal) {
           // Local -> remote: upload from the hub.
           const dstEp = resolveRef(dst.endpoint);
           const srcResolved = path.resolve(localExpandHome(src.path));
-          const base = path.basename(srcResolved);
+          const base = overrideName ?? path.basename(srcResolved);
           send(ws, { type: 'job', id, mode, label: `local:${base} -> ${dstEp.id}` });
           await pool.withSession(dstEp, async (dstSession) => {
             const dstFs = new RemoteFs(dstSession);
@@ -319,7 +324,7 @@ wss.on('connection', (ws) => {
           await pool.withSession(srcEp, async (srcSession) => {
             const srcFs = new RemoteFs(srcSession);
             const srcResolved = await srcFs.expandHome(src.path);
-            const base = srcFs.path.basename(srcResolved);
+            const base = overrideName ?? srcFs.path.basename(srcResolved);
             const dstPath = path.join(path.resolve(localExpandHome(dst.dir)), base);
             await engine.remoteToHub(srcSession, srcResolved, dstPath, {
               recursive,
@@ -337,10 +342,13 @@ wss.on('connection', (ws) => {
             pool.withSession(dstEp, async (dstSession) => {
               const srcFs = new RemoteFs(srcSession);
               const srcResolved = await srcFs.expandHome(src.path);
-              const base = srcFs.path.basename(srcResolved);
+              const base = overrideName ?? srcFs.path.basename(srcResolved);
               const dstFs = new RemoteFs(dstSession);
               const dstDir = await dstFs.expandHome(dst.dir);
               const dstPath = dstFs.path.join(dstDir, base);
+              if (srcEp.id === dstEp.id && dstPath === srcResolved) {
+                throw new Error('source and destination are the same path');
+              }
               await engine.remoteToRemote(srcSession, srcResolved, dstSession, dstPath, {
                 recursive,
                 signal: ctrl.signal,

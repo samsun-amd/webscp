@@ -40,7 +40,7 @@ export interface ListResponse {
 
 export interface TransferRequest {
   src: { endpoint: EndpointRef; path: string };
-  dst: { endpoint: EndpointRef; dir: string };
+  dst: { endpoint: EndpointRef; dir: string; name?: string };
   recursive?: boolean;
 }
 
