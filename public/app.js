@@ -679,6 +679,13 @@ class App {
       destPane.setMsg('not connected — transfer aborted (ws reconnecting)', true);
       return;
     }
+    // Dropping an item back into the folder it already lives in (same endpoint,
+    // same parent dir) is a no-op — silently ignore instead of prompting to
+    // rename or letting the server reject it as a same-path transfer.
+    const norm = (p) => p.replace(/\\/g, '/').replace(/\/+$/, '') || '/';
+    const sameEndpoint = JSON.stringify(dragged.endpoint) === JSON.stringify(destRef);
+    if (sameEndpoint && norm(dirname(dragged.path)) === norm(destPane.cwd)) return;
+
     const srcName = basename(dragged.path);
     // Re-list the destination now so the conflict check uses live remote state,
     // not whatever the pane happened to show earlier.
