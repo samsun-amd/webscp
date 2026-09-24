@@ -19,7 +19,10 @@ test('groups remain independent, reflect external edits, and reject stale refere
   write('us', 1, [client('192.0.2.3')]);
   write('empty', 3, []);
   write('badzero', 0, []);
-  write('smc', 4, [{ type: 'smc', name: 'smc', ip: '192.0.2.4', user: 'test' }]);
+  write('smc', 4, [
+    { type: 'smc', name: 'smc', ip: '192.0.2.4', user: 'test' },
+    { type: 'unknown', name: 'unsupported' },
+  ]);
   fs.writeFileSync(path.join(dir, 'ssh_remote_broken.json'), '{"pass":"PRIVATE_SENTINEL"');
   fs.writeFileSync(path.join(dir, 'ssh_remote_legacy.json'), JSON.stringify(fixture));
   fs.writeFileSync(path.join(dir, 'unrelated.json'), '{}');
@@ -30,7 +33,9 @@ test('groups remain independent, reflect external edits, and reject stale refere
   assert.ok(catalog.groups.find((g) => g.name === 'broken').error);
   assert.match(catalog.groups.find((g) => g.name === 'legacy').error, /convert legacy/);
   assert.ok(catalog.warnings.some((w) => /Duplicate group number/.test(w)));
-  assert.ok(catalog.warnings.some((w) => /standalone SMC/.test(w)));
+  assert.ok(!catalog.warnings.some((w) => /smc \/ node 1:/.test(w)));
+  assert.ok(catalog.warnings.some((w) => /smc \/ node 2: unsupported node type/.test(w)));
+  assert.equal(catalog.options.filter((o) => o.group === 'smc').length, 0);
   assert.doesNotMatch(JSON.stringify(catalog), /PRIVATE_SENTINEL|"password"|"pass"/);
   const tw = catalog.options.filter((o) => o.group === 'tw');
   assert.equal(new Set(tw.map((o) => o.key)).size, 3);

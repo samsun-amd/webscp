@@ -64,8 +64,13 @@ const PathHistory = {
     return this.memory.get(key) || [];
   },
   remember(key, path) {
+    this.write(key, [path, ...this.read(key).filter((p) => p !== path)]);
+  },
+  remove(key, path) {
+    this.write(key, this.read(key).filter((p) => p !== path));
+  },
+  write(key, paths) {
     if (!key) return;
-    const paths = [path, ...this.read(key).filter((p) => p !== path)];
     this.memory.set(key, paths);
     try { localStorage.setItem(`webscp.paths:${key}`, JSON.stringify(paths)); } catch { /* Session-only history. */ }
   },
@@ -161,6 +166,7 @@ class Pane {
     this.groupSelect = root.querySelector('.group-select');
     this.pathInput = root.querySelector('.path-input');
     this.pathHistory = root.querySelector('.path-history');
+    this.historyToggle = root.querySelector('.path-history-toggle');
     this.list = root.querySelector('.file-list');
     this.crumb = root.querySelector('.breadcrumb');
     this.msg = root.querySelector('.pane-msg');
@@ -176,11 +182,18 @@ class Pane {
 
     root.querySelector('.go-btn').addEventListener('click', () => this.refresh(true));
     this.pathInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') this.refresh(true); });
-    this.pathHistory.addEventListener('change', () => {
-      if (!this.pathHistory.value) return;
-      this.pathInput.value = this.pathHistory.value;
-      this.refresh(true);
+    this.pathHistory.addEventListener('beforetoggle', (e) => {
+      if (e.newState !== 'open') return;
+      const box = this.historyToggle.getBoundingClientRect();
+      const width = Math.min(420, window.innerWidth - 16);
+      Object.assign(this.pathHistory.style, {
+        width: `${width}px`,
+        left: `${Math.max(8, Math.min(box.left, window.innerWidth - width - 8))}px`,
+        top: `${box.bottom + 4}px`,
+        maxHeight: `${Math.min(320, window.innerHeight - box.bottom - 12)}px`,
+      });
     });
+    window.addEventListener('resize', () => this.pathHistory.hidePopover());
     // refresh re-lists the current directory, ignoring any unsubmitted edits in
     // the path box (go navigates to the typed path; refresh reloads where we are).
     root.querySelector('.refresh-btn').addEventListener('click', () => {
@@ -276,12 +289,35 @@ class Pane {
   }
 
   renderHistory() {
-    const paths = PathHistory.read(this.historyKey());
+    const key = this.historyKey();
+    const paths = PathHistory.read(key);
+    const signature = JSON.stringify([key, paths]);
+    if (signature === this.renderedHistory) return;
+    this.renderedHistory = signature;
     this.pathHistory.replaceChildren(
-      el('option', { value: '', text: 'Recent paths' }),
-      ...paths.map((p) => el('option', { value: p, text: p })),
+      ...paths.map((p, index) => el('li', null, [
+        el('button', {
+          class: 'path-choice', type: 'button', value: p, text: p, title: p,
+          onclick: () => {
+            this.pathHistory.hidePopover();
+            this.pathInput.value = p;
+            this.refresh(true);
+          },
+        }),
+        el('button', {
+          class: 'path-remove', type: 'button', text: '×',
+          'aria-label': `Remove ${p} from recent paths`, title: 'Remove from recent paths',
+          onclick: () => {
+            PathHistory.remove(key, p);
+            window.app.refreshHistories();
+            const remaining = this.pathHistory.querySelectorAll('.path-remove');
+            (remaining[Math.min(index, remaining.length - 1)] || this.pathInput).focus();
+          },
+        }),
+      ])),
     );
-    this.pathHistory.disabled = !paths.length;
+    this.historyToggle.disabled = !paths.length;
+    if (!paths.length) this.pathHistory.hidePopover();
   }
 
   invalidate() {

@@ -12,7 +12,7 @@ RestartSec=3
 User=__USER__
 Environment=WEBSCP_HOST=127.0.0.1
 Environment=WEBSCP_PORT=8088
-# Preserve config overrides from installation; otherwise use ~/sshm_config.
+# Preserve HTTP config overrides and the installer's resolved group directory.
 __CONFIG_ENV__
 
 [Install]

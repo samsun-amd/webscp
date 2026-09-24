@@ -92,7 +92,7 @@ export function inventoryCatalog(): InventoryCatalog {
     numbers.set(group.number!, group.name);
     group.inventory.raw().forEach((node, index) => {
       if (node.type !== 'client' && node.type !== 'server') {
-        result.warnings.push(`${group.name} / node ${index + 1}: standalone SMC and other unsupported node types are skipped.`);
+        if (node.type !== 'smc') result.warnings.push(`${group.name} / node ${index + 1}: unsupported node type is skipped.`);
         return;
       }
       const subs: Array<string | undefined> = node.type === 'client' ? [undefined] : ['bmc'];

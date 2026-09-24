@@ -36,7 +36,9 @@ test('browser: independent groups, reload safety, and persistent recent paths', 
   const { SshPool, RemoteFs } = require('@ssh-manager/core');
   SshPool.prototype.withSession = async (ep, fn) => fn({ endpoint: ep, os: 'posix' });
   RemoteFs.prototype.home = async () => '/home/test';
+  let listCalls = 0;
   RemoteFs.prototype.list = async (cwd) => {
+    listCalls += 1;
     if (cwd.endsWith('/missing')) throw new Error('not found');
     if (cwd.endsWith('/slow')) await new Promise((resolve) => setTimeout(resolve, 150));
     return [{ name: 'folder', path: `${cwd}/folder`, type: 'dir', size: 0, mtime: null, mode: 0 }];
@@ -74,11 +76,15 @@ test('browser: independent groups, reload safety, and persistent recent paths', 
   };
   await navigate('/a');
   await navigate('/b');
-  await page.select('#pane-left .path-history', '/a');
+  const choosePath = async (value) => {
+    await page.click('#pane-left .path-history-toggle');
+    await page.click(`#pane-left .path-choice[value="${value}"]`);
+  };
+  await choosePath('/a');
   await page.waitForFunction(() => window.app.panes.left.cwd === '/a' && window.app.panes.left.listedRef);
-  const history = () => page.$$eval('#pane-left .path-history option', (items) => items.slice(1).map((o) => o.value));
+  const history = (side = 'left') => page.$$eval(`#pane-${side} .path-choice`, (items) => items.map((o) => o.value));
   assert.deepEqual((await history()).slice(0, 2), ['/a', '/b']);
-  assert.ok(!(await page.$$eval('#pane-right .path-history option', (items) => items.map((o) => o.value))).includes('/a'));
+  assert.ok(!(await history('right')).includes('/a'));
 
   // Reordering updates the selector while preserving the selected target and path.
   write('tw', 1, [...nodes].reverse());
@@ -104,14 +110,59 @@ test('browser: independent groups, reload safety, and persistent recent paths', 
   assert.equal(await page.evaluate(() => window.app.panes.left.cwd), '/fast');
   assert.ok(!(await history()).includes('/slow'));
 
+  // Native popover supports keyboard access, Escape, and outside dismissal.
+  await page.focus('#pane-left .path-history-toggle');
+  await page.keyboard.press('Enter');
+  assert.ok(await page.$('#left-path-history:popover-open'));
+  await page.keyboard.press('Tab');
+  assert.equal(await page.evaluate(() => document.activeElement.className), 'path-choice');
+  await page.keyboard.press('Tab');
+  assert.equal(await page.evaluate(() => document.activeElement.className), 'path-remove');
+  await page.keyboard.press('Escape');
+  assert.equal(await page.$('#left-path-history:popover-open'), null);
+  assert.equal(await page.evaluate(() => document.activeElement.className), 'path-history-toggle');
+  await page.click('#pane-left .path-history-toggle');
+  await page.click('#pane-left .path-input');
+  assert.equal(await page.$('#left-path-history:popover-open'), null);
+
+  // Removing a path syncs both panes without navigating or changing other entries.
+  await page.select('#pane-right .group-select', 'tw');
+  await page.waitForFunction(() => window.app.panes.right.listedRef?.group === 'tw');
+  assert.deepEqual(await history('right'), await history());
+  const beforeRemoval = await history();
+  const beforeListCalls = listCalls;
+  await page.click('#pane-left .path-history-toggle');
+  await page.click('#pane-left .path-remove[aria-label="Remove /b from recent paths"]');
+  assert.deepEqual(await history(), beforeRemoval.filter((p) => p !== '/b'));
+  assert.deepEqual(await history('right'), await history());
+  assert.equal(listCalls, beforeListCalls);
+  assert.equal(await page.evaluate(() => window.app.panes.left.cwd), '/fast');
+  assert.equal(await page.evaluate(() => window.app.panes.right.cwd), '/home/test');
+  assert.equal(await page.evaluate(() => document.activeElement.className), 'path-remove');
+
   await page.reload();
   await page.waitForFunction(() => window.app?.panes.left.listedRef);
   await page.select('#pane-left .group-select', 'tw');
   await page.waitForFunction(() => window.app.panes.left.listedRef?.group === 'tw');
   assert.ok((await history()).includes('/a'));
-  await page.select('#pane-left .path-history', '/a');
+  assert.ok(!(await history()).includes('/b'), 'history removal must survive page reload');
+  await choosePath('/a');
   await page.waitForFunction(() => window.app.panes.left.cwd === '/a' && window.app.panes.left.listedRef);
   assert.equal((await history())[0], '/a');
+
+  // Removing the current path or the last entry leaves the listing intact.
+  const beforeClearCalls = listCalls;
+  await page.click('#pane-left .path-history-toggle');
+  while ((await history()).length) await page.click('#pane-left .path-remove');
+  assert.equal(listCalls, beforeClearCalls);
+  assert.equal(await page.evaluate(() => window.app.panes.left.cwd), '/a');
+  assert.ok(await page.$('#pane-left .file-list li'));
+  assert.equal(await page.$('#left-path-history:popover-open'), null);
+  assert.equal(await page.$eval('#pane-left .path-history-toggle', (s) => s.disabled), true);
+  assert.equal(await page.evaluate(() => document.activeElement.className), 'path-input');
+  await navigate('/again');
+  assert.deepEqual(await history(), ['/again']);
+  assert.equal(await page.$eval('#pane-left .path-history-toggle', (s) => s.disabled), false);
 
   // Auto-discovery preserves the other pane, and deletion clears stale files.
   write('extra', 3, nodes);
@@ -120,7 +171,7 @@ test('browser: independent groups, reload safety, and persistent recent paths', 
   await page.click('#reload-btn');
   await page.waitForFunction(() => window.app.panes.left.currentRef() === null);
   assert.equal(await page.$$eval('#pane-left .file-list li', (items) => items.length), 0);
-  assert.equal(await page.$eval('#pane-left .path-history', (s) => s.disabled), true);
+  assert.equal(await page.$eval('#pane-left .path-history-toggle', (s) => s.disabled), true);
   assert.ok(await page.$('#pane-left .path-input'));
   const visible = await page.$$eval('.pane-head input, .pane-head select, .pane-head button', (items) => items.every((item) => {
     const box = item.getBoundingClientRect();
@@ -134,10 +185,11 @@ test('browser: independent groups, reload safety, and persistent recent paths', 
     try {
       PathHistory.remember('storage-test', '/first');
       PathHistory.remember('storage-test', '/second');
+      PathHistory.remove('storage-test', '/first');
       return PathHistory.read('storage-test');
     } finally { Storage.prototype.setItem = original; }
   });
-  assert.deepEqual(fallback, ['/second', '/first']);
+  assert.deepEqual(fallback, ['/second']);
   const secretFree = await page.evaluate(() => Pane.prototype.historyKey.call({
     select: { value: 'adhoc' },
     adhocRef: { adhoc: { host: 'example', user: 'user', password: 'PRIVATE_SENTINEL', jump: { host: 'jump', user: 'root', password: 'JUMP_SENTINEL' } } },

@@ -23,11 +23,12 @@
       </div>
       <div class="pane-head path-controls">
         <input class="path-input" type="text" placeholder="~" aria-label="Left path" />
-        <select class="path-history" aria-label="Left recent paths"></select>
+        <button class="path-history-toggle" popovertarget="left-path-history" aria-label="Left recent paths" disabled>Recent paths ▾</button>
         <button class="go-btn">go</button>
         <button class="refresh-btn" title="Reload this pane">refresh</button>
         <button class="mkdir-btn" title="New folder">mkdir</button>
       </div>
+      <ul id="left-path-history" class="path-history" popover="auto" aria-label="Left recent paths"></ul>
       <div class="breadcrumb"></div>
       <ul class="file-list"></ul>
       <div class="pane-msg"></div>
@@ -41,11 +42,12 @@
       </div>
       <div class="pane-head path-controls">
         <input class="path-input" type="text" placeholder="~" aria-label="Right path" />
-        <select class="path-history" aria-label="Right recent paths"></select>
+        <button class="path-history-toggle" popovertarget="right-path-history" aria-label="Right recent paths" disabled>Recent paths ▾</button>
         <button class="go-btn">go</button>
         <button class="refresh-btn" title="Reload this pane">refresh</button>
         <button class="mkdir-btn" title="New folder">mkdir</button>
       </div>
+      <ul id="right-path-history" class="path-history" popover="auto" aria-label="Right recent paths"></ul>
       <div class="breadcrumb"></div>
       <ul class="file-list"></ul>
       <div class="pane-msg"></div>

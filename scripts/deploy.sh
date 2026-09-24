@@ -1,20 +1,17 @@
 #!/bin/bash
 #
-# webscp first-time deploy (run on the target machine, after git clone).
+# webscp deploy or update (run on the target machine, after git clone/pull).
 #
 # Does everything except `git clone`:
 #   - verifies layout, node/npm, and the resolved inventory
 #   - builds @ssh-manager/core
-#   - links core into webscp via a $HOME-anchored symlink (see note below)
+#   - links core into webscp from the resolved checkout path
 #   - builds webscp
-#   - installs + enables the systemd service
+#   - validates sshm groups, then installs, enables, and restarts the service
 #
 # Why a symlink instead of a package.json dependency:
-#   npm rewrites any `file:` dependency path into an ugly normalized relative
-#   path (even `file:$HOME/...` becomes `file:../../home/<user>/...`), so a
-#   "~"-anchored path cannot be stored in package.json. Instead we keep core out
-#   of webscp's dependencies and create the link here, anchored on $HOME, so the
-#   path stays portable and readable.
+#   keep machine-specific checkout paths out of package.json. Resolve the
+#   sibling checkout or SSH_MANAGER_CORE at deploy time instead.
 #
 # Prerequisite layout (clone both as siblings under ~/github):
 #   ~/github/ssh-manager
@@ -65,12 +62,12 @@ info "node $(node -v), npm $(npm -v)"
   or point at an existing checkout:
     SSH_MANAGER_CORE=/path/to/ssh-manager/packages/core $0"
 
-# --- 3. build @ssh-manager/core ---
+# --- 2. build @ssh-manager/core ---
 info "Building @ssh-manager/core…"
 ( cd "$CORE_DIR" && npm install --no-audit --no-fund && npm run build )
 [[ -f "$CORE_DIR/dist/index.js" ]] || die "core build produced no dist/index.js"
 
-# --- 4. install webscp deps, then link core ($HOME-anchored), then build ---
+# --- 3. install webscp deps, then link core, then build ---
 info "Installing webscp dependencies…"
 ( cd "$WEBSCP_DIR" && npm install --no-audit --no-fund )
 
@@ -87,7 +84,7 @@ info "Building webscp…"
 ( cd "$WEBSCP_DIR" && npm run build )
 [[ -f "$WEBSCP_DIR/dist/server/index.js" ]] || die "webscp build produced no dist/server/index.js"
 
-# Validate exactly the source used by the runtime, including group metadata.
+# --- 4. validate the runtime inventory source, including group metadata ---
 info "Checking inventory configuration…"
 ( cd "$WEBSCP_DIR" && node <<'JS'
 const { inventoryCatalog } = require('./dist/server/endpoints');
@@ -111,7 +108,9 @@ if (( INSTALL_SYSTEMD )); then
   info "Installing systemd service (sudo required)…"
   "$SCRIPT_DIR/install-systemd.sh"
 else
-  warn "Skipping systemd (--no-systemd). Start manually with: $SCRIPT_DIR/start.sh"
+  warn "Build complete; no service was changed (--no-systemd)."
+  echo "  Existing systemd service: sudo systemctl restart webscp"
+  echo "  Manual process: $SCRIPT_DIR/stop.sh then $SCRIPT_DIR/start.sh"
 fi
 
 echo
@@ -123,3 +122,4 @@ if (( INSTALL_SYSTEMD )); then
 else
   echo "  Start:    $SCRIPT_DIR/start.sh   (logs: $WEBSCP_DIR/webscp.log)"
 fi
+echo "  Refresh the browser after updating."

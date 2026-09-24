@@ -47,7 +47,7 @@ connects through that server's BMC.
   Duplicate node names are distinguished by their original node numbers.
 - Invalid files are shown as disabled groups with an error. Valid groups remain
   usable. Empty or missing directories still allow local and ad-hoc connections.
-- **Standalone `type: "smc"` nodes are skipped with a warning.** The CLI's shared
+- **Standalone `type: "smc"` nodes are silently skipped.** The CLI's shared
   SMC fallback is not implemented. Embedded `server.smc` continues to work.
 - Legacy array files are rejected. Convert them using ssh-manager's
   `convert_legacy_config.sh` or its offline config editor.
@@ -71,13 +71,16 @@ Node reordering preserves selection when the target's identity is unchanged.
 - **Ad-hoc** connects with transient host/user/password and optional jump
   credentials, held in browser memory for the current page only.
 - Enter a path and click **go**, press Enter, or double-click a directory.
-- **Recent paths** is a native dropdown beside the path input. Successful
+- **Recent paths** opens a native popover beside the path input. Successful
   navigation moves that path to the top without duplicates. Failed paths and
-  background refreshes do not change the ordering.
+  background refreshes do not change the ordering. Click **×** beside a path
+  to remove it from history without navigating or deleting any files. Use Tab
+  to reach the path and remove buttons, or Escape to close the dropdown.
 - Path history is stored per endpoint in browser `localStorage`, shared between
   panes using that endpoint, and survives page reloads. Passwords are never
   stored there. If browser storage is unavailable, history lasts for the page
-  session. Clearing site data removes saved history.
+  session. Removing a history entry also persists across reloads; visiting that
+  path again adds it back. Clearing site data removes all saved history.
 - Drag files or directories between panes. Name conflicts offer replace or
   keep both. Same-connection, same-path copies are rejected even across groups;
   connection identity includes the destination and jump host, not node labels.
@@ -94,8 +97,13 @@ Requires Node 18+ and the sibling ssh-manager checkout:
   webscp/
 ```
 
+Use a browser with native Popover API support (Chrome/Edge 114+, Firefox 125+,
+or Safari 17+) for the recent-path dropdown.
+
 The recommended deploy builds core, installs webscp dependencies, links core,
-builds webscp, validates group discovery, and installs the systemd service:
+builds webscp, validates group discovery, then installs, enables, and restarts
+the systemd service. Run it as the intended service user; only installation
+and systemd commands use sudo:
 
 ```bash
 ~/github/webscp/scripts/deploy.sh
@@ -133,6 +141,30 @@ Core is linked instead of listed as an npm dependency. Always create the link
 restart webscp to load the new build. Deploy derives paths from the checkout,
 and `SSH_MANAGER_CORE` controls both the core build location and link target.
 
+## Updating an existing installation
+
+After updating the checkout, rebuild and restart the existing systemd service
+without replacing its unit or changing its service account:
+
+```bash
+cd ~/github/webscp
+./scripts/deploy.sh --no-systemd
+sudo systemctl restart webscp
+systemctl status webscp --no-pager
+```
+
+Use the same `SSHM_CONFIG_DIR` and `SSH_MANAGER_CORE` overrides as the original
+deployment when running the build. `--no-systemd` does not change a running
+service or its environment. For a manually started process, run
+`./scripts/stop.sh` followed by `./scripts/start.sh` with the intended environment
+instead. Refresh the browser to load updated HTML, JavaScript, and CSS.
+
+To regenerate the service for the current checkout and user, run
+`./scripts/deploy.sh` without `--no-systemd`. This replaces the base unit and
+restarts the service; existing systemd drop-ins still apply. Sudo may prompt
+for a password. A failed sudo or systemd command stops deployment before it
+reports completion.
+
 ## HTTP configuration and systemd
 
 `config.json` is optional and git-ignored. It contains HTTP settings only;
@@ -162,8 +194,12 @@ journalctl -u webscp -f
 ```
 
 The installer renders `systemd/webscp.service.template` using the checkout path
-and current user. It forwards `WEBSCP_CONFIG` and `SSHM_CONFIG_DIR`, quoting
-systemd values. The template sets `WEBSCP_HOST=127.0.0.1` and `WEBSCP_PORT=8088`,
+and current user. It forwards `WEBSCP_CONFIG` and always records the resolved
+absolute `SSHM_CONFIG_DIR` (default: the installing user's `~/sshm_config`),
+quoting systemd values. Relative group paths resolve from the webscp checkout,
+matching the service's working directory. It runs daemon-reload, enables the unit, and restarts
+it so an already running service loads the new build and settings.
+The template sets `WEBSCP_HOST=127.0.0.1` and `WEBSCP_PORT=8088`,
 which take precedence over JSON settings. Use `systemctl edit --full webscp`
 to change these, then run `systemctl daemon-reload` and restart. Reinstall the
 service after moving the checkout or changing its configuration environment.
@@ -182,8 +218,8 @@ npm test
 ```
 
 Tests cover group discovery, stale refs, configuration precedence, read-only
-inventory APIs, transfer identity, and systemd rendering without real SSH or
-service installation. The optional browser check uses an existing
+inventory APIs, transfer identity, and systemd rendering and restart dispatch
+without real SSH or service installation. The optional browser check uses an existing
 `puppeteer-core` installation and Chrome executable:
 
 ```bash
@@ -191,6 +227,7 @@ WEBSCP_BROWSER_MODULE=/path/to/node_modules/puppeteer-core \
 WEBSCP_CHROME=/path/to/chrome npm test
 ```
 
-It verifies independent panes, selection after reordering, recent-path ordering
-and persistence, stale responses, and discovery of added/removed groups. SSH
+It verifies independent panes, selection after reordering, recent-path ordering,
+removal and persistence, keyboard access and dropdown dismissal, stale responses,
+and discovery of added/removed groups. SSH
 sessions are mocked; it does not connect to inventory machines.
