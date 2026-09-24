@@ -12,8 +12,8 @@ RestartSec=3
 User=__USER__
 Environment=WEBSCP_HOST=127.0.0.1
 Environment=WEBSCP_PORT=8088
-# install-systemd.sh fills this in only when SSH_REMOTE_JSON is set at install
-# time; otherwise the line is removed and core falls back to ~/note/ssh_remote.json.
+# install-systemd.sh fills this in when SSH_REMOTE_JSON or SSHM_CONFIG_DIR is set
+# at install time; otherwise core uses ~/sshm_config/ssh_remote_default.json.
 __SSH_REMOTE_JSON_ENV__
 
 [Install]

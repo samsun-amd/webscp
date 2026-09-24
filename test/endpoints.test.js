@@ -16,7 +16,7 @@ const FIXTURE = JSON.parse(
 ).inventory;
 
 const invFile = path.join(os.tmpdir(), `webscp-inv-${process.pid}.json`);
-fs.writeFileSync(invFile, JSON.stringify(FIXTURE), 'utf8');
+fs.writeFileSync(invFile, JSON.stringify({ group_number: 0, nodes: FIXTURE }), 'utf8');
 process.env.SSH_REMOTE_JSON = invFile;
 // Point config.json at a path that does not exist so the loader falls back to
 // SSH_REMOTE_JSON (the repo's real config.json must not leak into this test).

@@ -28,7 +28,7 @@ webscp does **not** ask machine A to talk to machine B directly. Instead:
 - Endpoints come from webscp's own `config.json` (copy `config.example.json` to
   start). Servers expose their `bmc` / `host<N>` / `smc` sub-targets
   automatically. If no `config.json` exists, webscp falls back to the same
-  `~/note/ssh_remote.json` that `sshm` uses.
+  `~/sshm_config/ssh_remote_default.json` that `sshm` uses.
 
 ## Features
 
@@ -61,7 +61,7 @@ webscp does **not** ask machine A to talk to machine B directly. Instead:
 
 - Node 18+ (developed on Node 22).
 - A `config.json` (copy from `config.example.json`). If absent, webscp falls
-  back to `$SSH_REMOTE_JSON` or `~/note/ssh_remote.json`. See **Configuration**.
+  back to `$SSH_REMOTE_JSON` or `~/sshm_config/ssh_remote_default.json`. See **Configuration**.
 - The `ssh-manager` repo checked out so `@ssh-manager/core` can be built and
   linked (see below).
 
@@ -125,7 +125,7 @@ git clone <webscp-url> webscp
 #   build/link only, skip the service:   ~/github/webscp/scripts/deploy.sh --no-systemd
 #   ssh-manager elsewhere:               SSH_MANAGER_CORE=/path/to/ssh-manager/packages/core ~/github/webscp/scripts/deploy.sh
 #   custom inventory (forwarded to the service unit):
-#                                        SSH_REMOTE_JSON=~/note/other.json ~/github/webscp/scripts/deploy.sh
+#                                        SSH_REMOTE_JSON=~/sshm_config/ssh_remote_tw.json ~/github/webscp/scripts/deploy.sh
 ```
 
 Then open `http://127.0.0.1:8088`.
@@ -215,12 +215,13 @@ address, which overrides `allowRemoteAccess`.
 **Inventory resolution precedence:**
 
 1. `config.json` → `inventory` (inline nodes) — preferred
-2. `config.json` → `inventoryPath` (path to an external JSON array, `~` allowed)
+2. `config.json` → `inventoryPath` (path to a `{group_number, nodes}` JSON object, `~` allowed)
 3. `$SSH_REMOTE_JSON` environment variable
-4. `~/note/ssh_remote.json` (legacy default)
+4. `~/sshm_config/ssh_remote_default.json` (default group; `SSHM_CONFIG_DIR` overrides its directory)
 
-This keeps backward compatibility: with no `config.json`, webscp behaves exactly
-as before.
+Inline `config.json.inventory` remains a node array. External inventory files
+must use the group object format; convert legacy arrays with
+`~/github/ssh-manager/convert_legacy_config.sh` before updating core.
 
 ### Environment variables (override config.json)
 
@@ -229,7 +230,8 @@ as before.
 | `WEBSCP_HOST` | from `config.server` (see below) | Explicit bind address; overrides `allowRemoteAccess` |
 | `WEBSCP_PORT` | `config.server.port` → `8088` | Port |
 | `WEBSCP_CONFIG` | `<repo>/config.json` | Config file location |
-| `SSH_REMOTE_JSON` | `~/note/ssh_remote.json` | Fallback inventory file (only used when config.json has no inventory) |
+| `SSH_REMOTE_JSON` | `~/sshm_config/ssh_remote_default.json` | Fallback inventory file (only used when config.json has no inventory) |
+| `SSHM_CONFIG_DIR` | `~/sshm_config` | Directory containing the fallback `ssh_remote_default.json` |
 | `SSH_MANAGER_CORE` | `../ssh-manager/packages/core` | core location (deploy.sh only) |
 
 Host resolution precedence: `WEBSCP_HOST` > `config.server.host` >
@@ -255,7 +257,7 @@ The repo ships a **template**, not a ready unit:
 |---|---|---|
 | `__APP_DIR__` | absolute path to this checkout (e.g. `/home/you/github/webscp`) | computed from the script's own location — no hardcoding |
 | `__USER__` | the user who ran the installer | `id -un` |
-| `__SSH_REMOTE_JSON_ENV__` | an `Environment=SSH_REMOTE_JSON=…` line, or removed | added only if `SSH_REMOTE_JSON` was set when you ran the installer |
+| `__SSH_REMOTE_JSON_ENV__` | an `Environment=SSH_REMOTE_JSON=…` line, or removed | added if `SSH_REMOTE_JSON` or `SSHM_CONFIG_DIR` was set when you ran the installer |
 
 `__APP_DIR__` becomes both `WorkingDirectory` and the path in
 `ExecStart=/usr/bin/env node __APP_DIR__/dist/server/index.js`. **This is why the
@@ -268,11 +270,11 @@ The rendered unit also sets `Environment=WEBSCP_HOST=127.0.0.1` and
 ### Install / reinstall by hand
 
 ```bash
-# default inventory (~/note/ssh_remote.json):
+# default inventory (~/sshm_config/ssh_remote_default.json):
 ~/github/webscp/scripts/install-systemd.sh
 
 # custom inventory path — export it FIRST so it gets baked into the unit:
-SSH_REMOTE_JSON=~/note/other.json ~/github/webscp/scripts/install-systemd.sh
+SSH_REMOTE_JSON=~/sshm_config/ssh_remote_tw.json ~/github/webscp/scripts/install-systemd.sh
 ```
 
 The installer runs `npm run build` if `dist/` is missing, renders the template,
@@ -325,8 +327,8 @@ transfer row) and in the log.
 
 - **An endpoint shows a red error / "connection failed".** The hub could not SSH
   to that target. Confirm the host is up and reachable *from the hub*, that the
-  creds in `ssh_remote.json` are correct, and that BMC-jumped targets (`host<N>`,
-  `smc`) have a valid `bmc` block. A dead remote fails fast (15 s handshake
+  creds in the configured inventory are correct, and that BMC-jumped `smc`
+  targets have a valid `bmc` block. A dead remote fails fast (15 s handshake
   timeout) rather than hanging; the REST call returns `503`.
 
 - **Port already in use (`EADDRINUSE`).** Something else holds `8088`. Find it

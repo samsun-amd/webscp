@@ -3,7 +3,7 @@
 # webscp first-time deploy (run on the target machine, after git clone).
 #
 # Does everything except `git clone`:
-#   - verifies layout, node/npm, and ssh_remote.json
+#   - verifies layout, node/npm, and the inventory source
 #   - builds @ssh-manager/core
 #   - links core into webscp via a $HOME-anchored symlink (see note below)
 #   - builds webscp
@@ -42,9 +42,9 @@ CORE_DIR="$(cd "$CORE_DIR" 2>/dev/null && pwd || echo "$CORE_DIR")"
 
 # Inventory sources, in precedence order:
 #   1. webscp's own config.json (preferred; holds inline inventory + server cfg)
-#   2. legacy fallback: $SSH_REMOTE_JSON, else ~/note/ssh_remote.json
+#   2. SSH_REMOTE_JSON, else the default group in SSHM_CONFIG_DIR or ~/sshm_config
 CONFIG_JSON="${WEBSCP_CONFIG:-$WEBSCP_DIR/config.json}"
-INVENTORY="${SSH_REMOTE_JSON:-$HOME/note/ssh_remote.json}"
+INVENTORY="${SSH_REMOTE_JSON:-${SSHM_CONFIG_DIR:-$HOME/sshm_config}/ssh_remote_default.json}"
 
 INSTALL_SYSTEMD=1
 [[ "${1:-}" == "--no-systemd" ]] && INSTALL_SYSTEMD=0
@@ -71,7 +71,7 @@ info "node $(node -v), npm $(npm -v)"
   or point at an existing checkout:
     SSH_MANAGER_CORE=/path/to/ssh-manager/packages/core $0"
 
-# --- 2. inventory check (config.json preferred, ssh_remote.json fallback) ---
+# --- 2. inventory check (config.json preferred, group config fallback) ---
 if [[ -r "$CONFIG_JSON" ]]; then
   COUNT="$(node -e '
     const c = JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));
@@ -81,18 +81,25 @@ if [[ -r "$CONFIG_JSON" ]]; then
   ' "$CONFIG_JSON" 2>/dev/null)" || die "config.json exists but is not valid JSON: $CONFIG_JSON"
   info "Config OK: $CONFIG_JSON (inventory: $COUNT)"
 elif [[ -r "$INVENTORY" ]]; then
-  if node -e 'JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"))' "$INVENTORY" 2>/dev/null; then
-    COUNT="$(node -e 'console.log(JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).length)' "$INVENTORY" 2>/dev/null || echo '?')"
+  if COUNT=$(node -e '
+    const c = JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));
+    if (!c || !Number.isSafeInteger(c.group_number) || c.group_number < 0 || !Array.isArray(c.nodes)
+      || !c.nodes.every(n => n && typeof n === "object" && !Array.isArray(n))) process.exit(1);
+    const base = require("path").basename(process.argv[1]);
+    if ((base === "ssh_remote_default.json" && c.group_number !== 0)
+      || (/^ssh_remote_.+\.json$/.test(base) && base !== "ssh_remote_default.json" && c.group_number === 0)) process.exit(1);
+    console.log(c.nodes.length);
+  ' "$INVENTORY" 2>/dev/null); then
     info "Inventory OK (fallback): $INVENTORY ($COUNT nodes)"
-    warn "No config.json found; using legacy $INVENTORY."
+    warn "No config.json found; using $INVENTORY."
     warn "Consider: cp $WEBSCP_DIR/config.example.json $CONFIG_JSON"
   else
-    die "Inventory exists but is not valid JSON: $INVENTORY"
+    die "Inventory must use {group_number, nodes}: $INVENTORY. Convert legacy arrays with ssh-manager/convert_legacy_config.sh."
   fi
 else
   warn "No inventory source found."
   warn "Create $CONFIG_JSON (copy config.example.json) with your nodes,"
-  warn "or provide the legacy $INVENTORY. Continuing the build anyway…"
+  warn "or provide $INVENTORY. Continuing the build anyway…"
 fi
 
 # --- 3. build @ssh-manager/core ---

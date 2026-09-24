@@ -15,9 +15,13 @@ if [[ ! -d "$APP_DIR/dist" ]]; then
 fi
 
 # Forward a custom inventory path into the unit only when one is set at install
-# time; otherwise drop the placeholder line so core uses its ~/note default.
-if [[ -n "${SSH_REMOTE_JSON:-}" ]]; then
-  SSH_REMOTE_JSON_ENV="Environment=SSH_REMOTE_JSON=${SSH_REMOTE_JSON}"
+# time; resolve SSHM_CONFIG_DIR to a file so systemd uses the same directory.
+inventory_path="${SSH_REMOTE_JSON:-}"
+if [[ -z "$inventory_path" && -n "${SSHM_CONFIG_DIR:-}" ]]; then
+  inventory_path="$SSHM_CONFIG_DIR/ssh_remote_default.json"
+fi
+if [[ -n "$inventory_path" ]]; then
+  SSH_REMOTE_JSON_ENV="Environment=SSH_REMOTE_JSON=${inventory_path}"
 else
   SSH_REMOTE_JSON_ENV=""
 fi

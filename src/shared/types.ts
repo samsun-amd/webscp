@@ -2,7 +2,7 @@
 
 export interface EndpointRef {
   /**
-   * "inventory" => resolve via ssh_remote.json; "adhoc" => explicit creds;
+   * "inventory" => resolve via the configured inventory; "adhoc" => explicit creds;
    * "local" => the hub machine itself (Node fs, no SSH).
    */
   source: 'inventory' | 'adhoc' | 'local';

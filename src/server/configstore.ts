@@ -16,7 +16,7 @@ import {
  *  - Passwords are never sent to the browser, so an edit that omits a password
  *    must KEEP the stored one. We merge incoming nodes against current storage
  *    per credential block.
- *  - We must never silently diverge from a legacy ~/note/ssh_remote.json: the
+ *  - We must never silently diverge from the configured external inventory: the
  *    first write seeds a fresh config.json from the currently-resolved
  *    inventory so config.json becomes the single source of truth from then on.
  */
@@ -71,7 +71,7 @@ export function redactNode(n: InventoryNode): RedactedNode {
 /**
  * The inventory nodes config.json should operate on. If config.json already has
  * inline nodes, use them; otherwise seed from the currently-resolved inventory
- * (env / legacy file) so the first write captures the real state.
+ * (external group file) so the first write captures the real state.
  */
 function currentNodes(): InventoryNode[] {
   const cfg = getConfig();

@@ -5,7 +5,7 @@ import { Inventory, InventoryNode, resolveInventoryPath } from '@ssh-manager/cor
 
 /**
  * webscp's own configuration. Keeps all remote/connection info and server
- * binding in one place so the app no longer depends on ~/note/ssh_remote.json.
+ * binding in one place so inline inventory does not depend on an external file.
  *
  * The real config.json holds private connection details and is git-ignored;
  * config.example.json is the committed template.
@@ -37,7 +37,7 @@ export interface WebscpConfig {
   inventory?: InventoryNode[];
   /**
    * Alternative to inline: a path to an external inventory JSON (the same
-   * array shape sshm uses). A leading "~" is expanded against $HOME.
+   * {group_number, nodes} shape sshm uses). A leading "~" is expanded against $HOME.
    */
   inventoryPath?: string;
 }
@@ -93,8 +93,8 @@ export function reloadConfig(explicit?: string): WebscpConfig {
  *   1. config.json `inventory` (inline nodes)
  *   2. config.json `inventoryPath` (external file)
  *   3. $SSH_REMOTE_JSON env var  (core default chain)
- *   4. ~/note/ssh_remote.json    (core default chain)
- * (3) and (4) are handled inside core, preserving backward compatibility.
+ *   4. ssh_remote_default.json in SSHM_CONFIG_DIR or ~/sshm_config
+ * (3) and (4) are handled inside core. External legacy arrays must be converted.
  */
 export function loadInventory(explicitConfigPath?: string): Inventory {
   const cfg = getConfig(explicitConfigPath);
