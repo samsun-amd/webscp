@@ -5,7 +5,7 @@ import { Inventory, InventoryNode, resolveInventoryPath } from '@ssh-manager/cor
 
 /**
  * webscp's own configuration. Keeps all remote/connection info and server
- * binding in one place so inline inventory does not depend on an external file.
+ * binding in one place, with optional external ssh-manager group configuration.
  *
  * The real config.json holds private connection details and is git-ignored;
  * config.example.json is the committed template.
@@ -37,7 +37,7 @@ export interface WebscpConfig {
   inventory?: InventoryNode[];
   /**
    * Alternative to inline: a path to an external inventory JSON (the same
-   * {group_number, nodes} shape sshm uses). A leading "~" is expanded against $HOME.
+   * {group_number, nodes} shape sshm uses). A leading "~" expands against $HOME.
    */
   inventoryPath?: string;
 }
@@ -73,6 +73,9 @@ function readConfigFile(explicit?: string): WebscpConfig {
   if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
     throw new Error(`config.json must be a JSON object: ${file}`);
   }
+  if (parsed.inventory !== undefined && !Array.isArray(parsed.inventory)) {
+    throw new Error(`config.json inventory must be an array: ${file}`);
+  }
   return parsed as WebscpConfig;
 }
 
@@ -93,28 +96,28 @@ export function reloadConfig(explicit?: string): WebscpConfig {
  *   1. config.json `inventory` (inline nodes)
  *   2. config.json `inventoryPath` (external file)
  *   3. $SSH_REMOTE_JSON env var  (core default chain)
- *   4. ssh_remote_default.json in SSHM_CONFIG_DIR or ~/sshm_config
- * (3) and (4) are handled inside core. External legacy arrays must be converted.
+ *   4. ${SSHM_CONFIG_DIR:-~/sshm_config}/ssh_remote_default.json
+ * External files require {group_number, nodes}; inline inventory stays an array.
  */
 export function loadInventory(explicitConfigPath?: string): Inventory {
   const cfg = getConfig(explicitConfigPath);
-  if (cfg.inventory && cfg.inventory.length > 0) {
+  if (cfg.inventory !== undefined) {
     return new Inventory(cfg.inventory);
   }
   if (cfg.inventoryPath) {
     return Inventory.load(expandHome(cfg.inventoryPath));
   }
-  return Inventory.load();
+  return Inventory.load(expandHome(resolveInventoryPath()));
 }
 
 /** Resolve the inventory source location for diagnostics/logging. */
 export function inventorySourceLabel(explicitConfigPath?: string): string {
   const cfg = getConfig(explicitConfigPath);
-  if (cfg.inventory && cfg.inventory.length > 0) {
+  if (cfg.inventory !== undefined) {
     return `${resolveConfigPath(explicitConfigPath)} (inline)`;
   }
   if (cfg.inventoryPath) return expandHome(cfg.inventoryPath);
-  return resolveInventoryPath();
+  return expandHome(resolveInventoryPath());
 }
 
 /**

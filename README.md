@@ -217,11 +217,15 @@ address, which overrides `allowRemoteAccess`.
 1. `config.json` → `inventory` (inline nodes) — preferred
 2. `config.json` → `inventoryPath` (path to a `{group_number, nodes}` JSON object, `~` allowed)
 3. `$SSH_REMOTE_JSON` environment variable
-4. `~/sshm_config/ssh_remote_default.json` (default group; `SSHM_CONFIG_DIR` overrides its directory)
+4. `${SSHM_CONFIG_DIR:-~/sshm_config}/ssh_remote_default.json`
 
-Inline `config.json.inventory` remains a node array. External inventory files
-must use the group object format; convert legacy arrays with
-`~/github/ssh-manager/convert_legacy_config.sh` before updating core.
+Inline `inventory` remains a node array; an explicit empty array disables fallback.
+External files must use `{ "group_number": 0, "nodes": [...] }`. Legacy external
+arrays are rejected. Convert them with ssh-manager's `convert_legacy_config.sh`
+and update `inventoryPath` or `SSH_REMOTE_JSON` to the output file. Group 0 is
+reserved for `ssh_remote_default.json` among managed filenames.
+
+`SSHM_CONFIG` is a CLI-only override; core/webscp use `SSH_REMOTE_JSON` instead.
 
 ### Environment variables (override config.json)
 
@@ -231,7 +235,7 @@ must use the group object format; convert legacy arrays with
 | `WEBSCP_PORT` | `config.server.port` → `8088` | Port |
 | `WEBSCP_CONFIG` | `<repo>/config.json` | Config file location |
 | `SSH_REMOTE_JSON` | `~/sshm_config/ssh_remote_default.json` | Fallback inventory file (only used when config.json has no inventory) |
-| `SSHM_CONFIG_DIR` | `~/sshm_config` | Directory containing the fallback `ssh_remote_default.json` |
+| `SSHM_CONFIG_DIR` | `~/sshm_config` | Directory containing the default group file |
 | `SSH_MANAGER_CORE` | `../ssh-manager/packages/core` | core location (deploy.sh only) |
 
 Host resolution precedence: `WEBSCP_HOST` > `config.server.host` >
@@ -257,10 +261,11 @@ The repo ships a **template**, not a ready unit:
 |---|---|---|
 | `__APP_DIR__` | absolute path to this checkout (e.g. `/home/you/github/webscp`) | computed from the script's own location — no hardcoding |
 | `__USER__` | the user who ran the installer | `id -un` |
-| `__SSH_REMOTE_JSON_ENV__` | an `Environment=SSH_REMOTE_JSON=…` line, or removed | added if `SSH_REMOTE_JSON` or `SSHM_CONFIG_DIR` was set when you ran the installer |
+| `__ENTRY_POINT__` | quoted absolute path to `dist/server/index.js` | derived from the checkout |
+| `__CONFIG_ENV__` | quoted `Environment=` lines, or removed | preserves `WEBSCP_CONFIG`, `SSH_REMOTE_JSON`, and `SSHM_CONFIG_DIR` when set during installation |
 
 `__APP_DIR__` becomes both `WorkingDirectory` and the path in
-`ExecStart=/usr/bin/env node __APP_DIR__/dist/server/index.js`. **This is why the
+`ExecStart=/usr/bin/env node __ENTRY_POINT__`. **This is why the
 service must be (re)installed if you move or rename the checkout** — the absolute
 path is baked into the installed unit at `/etc/systemd/system/webscp.service`.
 
@@ -327,8 +332,7 @@ transfer row) and in the log.
 
 - **An endpoint shows a red error / "connection failed".** The hub could not SSH
   to that target. Confirm the host is up and reachable *from the hub*, that the
-  creds in the configured inventory are correct, and that BMC-jumped `smc`
-  targets have a valid `bmc` block. A dead remote fails fast (15 s handshake
+  creds in `ssh_remote.json` are correct, and that BMC-jumped targets (`smc`) have a valid `bmc` block. A dead remote fails fast (15 s handshake
   timeout) rather than hanging; the REST call returns `503`.
 
 - **Port already in use (`EADDRINUSE`).** Something else holds `8088`. Find it

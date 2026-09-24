@@ -14,23 +14,26 @@ if [[ ! -d "$APP_DIR/dist" ]]; then
   (cd "$APP_DIR" && npm run build)
 fi
 
-# Forward a custom inventory path into the unit only when one is set at install
-# time; resolve SSHM_CONFIG_DIR to a file so systemd uses the same directory.
-inventory_path="${SSH_REMOTE_JSON:-}"
-if [[ -z "$inventory_path" && -n "${SSHM_CONFIG_DIR:-}" ]]; then
-  inventory_path="$SSHM_CONFIG_DIR/ssh_remote_default.json"
-fi
-if [[ -n "$inventory_path" ]]; then
-  SSH_REMOTE_JSON_ENV="Environment=SSH_REMOTE_JSON=${inventory_path}"
-else
-  SSH_REMOTE_JSON_ENV=""
-fi
-
 TMP="$(mktemp)"
-sed -e "s#__APP_DIR__#${APP_DIR}#g" \
-    -e "s#__USER__#$(id -un)#g" \
-    -e "s#__SSH_REMOTE_JSON_ENV__#${SSH_REMOTE_JSON_ENV}#g" \
-    "$TEMPLATE" > "$TMP"
+trap 'rm -f "$TMP"' EXIT
+node - "$TEMPLATE" "$APP_DIR" "$(id -un)" > "$TMP" <<'JS'
+const fs = require('node:fs');
+const [template, appDir, user] = process.argv.slice(2);
+// Quote systemd values and escape specifiers, including literal percent signs.
+const quote = (value) => JSON.stringify(value.replace(/%/g, '%%'));
+const overrides = ['WEBSCP_CONFIG', 'SSH_REMOTE_JSON', 'SSHM_CONFIG_DIR'];
+const replacements = {
+  __APP_DIR__: quote(appDir),
+  __ENTRY_POINT__: quote(`${appDir}/dist/server/index.js`),
+  __USER__: quote(user),
+  __CONFIG_ENV__: overrides.filter((key) => process.env[key])
+    .map((key) => `Environment=${quote(`${key}=${process.env[key]}`)}`).join('\n'),
+};
+process.stdout.write(fs.readFileSync(template, 'utf8').replace(
+  /__APP_DIR__|__ENTRY_POINT__|__USER__|__CONFIG_ENV__/g,
+  (key) => replacements[key],
+));
+JS
 
 echo "Installing $DEST (sudo required)…"
 sudo cp "$TMP" "$DEST"

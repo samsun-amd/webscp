@@ -75,7 +75,7 @@ export function redactNode(n: InventoryNode): RedactedNode {
  */
 function currentNodes(): InventoryNode[] {
   const cfg = getConfig();
-  if (cfg.inventory && cfg.inventory.length > 0) return cfg.inventory;
+  if (cfg.inventory !== undefined) return cfg.inventory;
   const inv: Inventory = loadInventory();
   return inv.raw();
 }
