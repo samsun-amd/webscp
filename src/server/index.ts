@@ -11,15 +11,8 @@ import {
   WsClientMessage,
   WsServerMessage,
 } from '../shared/types';
-import { getInventory, reloadInventory, resolveRef } from './endpoints';
-import { serverSettings, inventorySourceLabel } from './config';
-import {
-  listNodesRedacted,
-  createNode,
-  updateNode,
-  deleteNode,
-  RawNodeInput,
-} from './configstore';
+import { inventoryCatalog, resolveRef, connectionIdentity } from './endpoints';
+import { serverSettings, inventorySourceLabel, reloadConfig } from './config';
 
 const LOCAL_OS: 'posix' | 'windows' = process.platform === 'win32' ? 'windows' : 'posix';
 
@@ -33,6 +26,14 @@ function localExpandHome(p: string): string {
   if (p === '~') return home;
   if (p.startsWith('~/') || p.startsWith('~\\')) return path.join(home, p.slice(2));
   return p;
+}
+
+/** Use absolute, normalized paths for listings and transfer comparisons. */
+async function resolveRemotePath(rfs: RemoteFs, input: string): Promise<string> {
+  let resolved = await rfs.expandHome(input);
+  if (!rfs.path.isAbsolute(resolved)) resolved = rfs.path.join(await rfs.home(), resolved);
+  return rfs.path.os === 'windows'
+    ? path.win32.normalize(resolved).replace(/\\/g, '/') : path.posix.normalize(resolved);
 }
 
 /** Directory listing on the hub machine itself, shaped like a remote list. */
@@ -77,11 +78,12 @@ app.use(express.json({ limit: '1mb' }));
 app.use(express.static(path.join(__dirname, '../../public')));
 
 function errStatus(e: unknown): number {
-  // configstore errors carry an explicit HTTP status.
+  // Structured errors may carry an explicit HTTP status.
   if (e && typeof e === 'object' && typeof (e as { status?: unknown }).status === 'number') {
     return (e as { status: number }).status;
   }
   const msg = e instanceof Error ? e.message : String(e);
+  if (/reload inventory/i.test(msg)) return 409;
   if (/not found|no inventory|ENOENT/i.test(msg)) return 404;
   if (/authentication/i.test(msg)) return 401;
   if (/connection failed|timed out|unreachable|refused/i.test(msg)) return 503;
@@ -91,30 +93,7 @@ function errStatus(e: unknown): number {
 // List inventory endpoints for the pane dropdowns.
 app.get('/api/endpoints', (_req, res) => {
   try {
-    const inv = getInventory();
-    const summaries = inv.list();
-    // Expand server nodes into selectable sub-targets (bmc / hosts / smc).
-    const options: Array<{ label: string; ref: EndpointRef }> = [];
-    // The hub machine itself is always available as a source/destination.
-    options.push({ label: 'localhost (this machine)', ref: { source: 'local' } });
-    for (const node of inv.raw()) {
-      if (node.type === 'client') {
-        options.push({ label: `${node.name} (client)`, ref: { source: 'inventory', selector: node.name } });
-      } else if (node.type === 'server') {
-        options.push({ label: `${node.name} / bmc`, ref: { source: 'inventory', selector: node.name, sub: 'bmc' } });
-        (node.hosts || []).forEach((_h, i) => {
-          options.push({
-            label: `${node.name} / host${i + 1}`,
-            ref: { source: 'inventory', selector: node.name, sub: `host${i + 1}` },
-          });
-        });
-        // The SMC option only exists when the server declares an embedded smc.
-        if (node.smc) {
-          options.push({ label: `${node.name} / smc (via bmc)`, ref: { source: 'inventory', selector: node.name, sub: 'smc' } });
-        }
-      }
-    }
-    res.json({ summaries, options });
+    res.set('Cache-Control', 'no-store').json(inventoryCatalog());
   } catch (e) {
     res.status(errStatus(e)).json({ error: e instanceof Error ? e.message : String(e) });
   }
@@ -122,48 +101,8 @@ app.get('/api/endpoints', (_req, res) => {
 
 app.post('/api/reload', (_req, res) => {
   try {
-    reloadInventory();
-    res.json({ ok: true });
-  } catch (e) {
-    res.status(errStatus(e)).json({ error: e instanceof Error ? e.message : String(e) });
-  }
-});
-
-// --- node management (config.json CRUD) ---
-// Passwords are never returned; see configstore.redactNode.
-app.get('/api/nodes', (_req, res) => {
-  try {
-    res.json({ nodes: listNodesRedacted() });
-  } catch (e) {
-    res.status(errStatus(e)).json({ error: e instanceof Error ? e.message : String(e) });
-  }
-});
-
-app.post('/api/nodes', (req, res) => {
-  try {
-    createNode(req.body as RawNodeInput);
-    reloadInventory();
-    res.json({ ok: true });
-  } catch (e) {
-    res.status(errStatus(e)).json({ error: e instanceof Error ? e.message : String(e) });
-  }
-});
-
-app.put('/api/nodes/:name', (req, res) => {
-  try {
-    updateNode(req.params.name, req.body as RawNodeInput);
-    reloadInventory();
-    res.json({ ok: true });
-  } catch (e) {
-    res.status(errStatus(e)).json({ error: e instanceof Error ? e.message : String(e) });
-  }
-});
-
-app.delete('/api/nodes/:name', (req, res) => {
-  try {
-    deleteNode(req.params.name);
-    reloadInventory();
-    res.json({ ok: true });
+    reloadConfig();
+    res.json(inventoryCatalog());
   } catch (e) {
     res.status(errStatus(e)).json({ error: e instanceof Error ? e.message : String(e) });
   }
@@ -190,7 +129,7 @@ app.post('/api/list', async (req, res) => {
     const reqPath: string = req.body.path || '~';
     const out = await pool.withSession(ep, async (session) => {
       const rfs = new RemoteFs(session);
-      const cwd = await rfs.expandHome(reqPath || '~');
+      const cwd = await resolveRemotePath(rfs, reqPath);
       const entries = await rfs.list(cwd, { includeHidden: false });
       const response: ListResponse = {
         cwd,
@@ -269,6 +208,8 @@ wss.on('connection', (ws) => {
       return;
     }
 
+    if (!msg || typeof msg !== 'object') return;
+
     if (msg.type === 'cancel') {
       activeJobs.get(msg.id)?.abort();
       return;
@@ -279,17 +220,24 @@ wss.on('connection', (ws) => {
       const id = `job-${jobCounter}`;
       const ctrl = new AbortController();
       activeJobs.set(id, ctrl);
-      const { src, dst } = msg.payload;
-      const recursive = msg.payload.recursive ?? true;
-      const srcLocal = isLocal(src.endpoint);
-      const dstLocal = isLocal(dst.endpoint);
-      const onProgress = (p: { bytes: number; total: number | null; file: string }) =>
-        send(ws, { type: 'progress', id, bytes: p.bytes, total: p.total, file: p.file });
-
+      send(ws, { type: 'job', id, mode: 'relay', label: 'Transfer' });
       try {
-        const mode: 'direct' | 'relay' = 'relay';
-
-        const overrideName = msg.payload.dst.name;
+        const { src, dst } = msg.payload || {};
+        if (!src?.endpoint || !dst?.endpoint || typeof src.path !== 'string' || !src.path
+          || typeof dst.dir !== 'string' || !dst.dir) throw new Error('Transfer requires source and destination paths');
+        const label = (ref: EndpointRef) => ref.source === 'inventory'
+          ? `${ref.group}/${ref.selector}${ref.sub ? `/${ref.sub}` : ''}` : ref.source;
+        send(ws, { type: 'job', id, mode: 'relay', label: `${label(src.endpoint)}:${src.path} -> ${label(dst.endpoint)}:${dst.dir}` });
+        const recursive = msg.payload.recursive ?? true;
+        const srcLocal = isLocal(src.endpoint);
+        const dstLocal = isLocal(dst.endpoint);
+        const onProgress = (p: { bytes: number; total: number | null; file: string }) =>
+          send(ws, { type: 'progress', id, bytes: p.bytes, total: p.total, file: p.file });
+        const overrideName = dst.name;
+        if (overrideName !== undefined && (typeof overrideName !== 'string' || !overrideName
+          || overrideName === '.' || overrideName === '..' || /[/\\\0]/.test(overrideName))) {
+          throw new Error('Destination name must be a single filename');
+        }
 
         if (srcLocal && dstLocal) {
           // Both ends are the hub: a plain local filesystem copy.
@@ -299,17 +247,15 @@ wss.on('connection', (ws) => {
           if (dstPath === srcResolved) {
             throw new Error('source and destination are the same path');
           }
-          send(ws, { type: 'job', id, mode, label: `local:${base} -> local` });
           fs.cpSync(srcResolved, dstPath, { recursive });
         } else if (srcLocal) {
           // Local -> remote: upload from the hub.
           const dstEp = resolveRef(dst.endpoint);
           const srcResolved = path.resolve(localExpandHome(src.path));
           const base = overrideName ?? path.basename(srcResolved);
-          send(ws, { type: 'job', id, mode, label: `local:${base} -> ${dstEp.id}` });
           await pool.withSession(dstEp, async (dstSession) => {
             const dstFs = new RemoteFs(dstSession);
-            const dstDir = await dstFs.expandHome(dst.dir);
+            const dstDir = await resolveRemotePath(dstFs, dst.dir);
             const dstPath = dstFs.path.join(dstDir, base);
             await engine.hubToRemote(srcResolved, dstSession, dstPath, {
               recursive,
@@ -320,10 +266,9 @@ wss.on('connection', (ws) => {
         } else if (dstLocal) {
           // Remote -> local: download to the hub.
           const srcEp = resolveRef(src.endpoint);
-          send(ws, { type: 'job', id, mode, label: `${srcEp.id}:${basenameLoose(src.path)} -> local` });
           await pool.withSession(srcEp, async (srcSession) => {
             const srcFs = new RemoteFs(srcSession);
-            const srcResolved = await srcFs.expandHome(src.path);
+            const srcResolved = await resolveRemotePath(srcFs, src.path);
             const base = overrideName ?? srcFs.path.basename(srcResolved);
             const dstPath = path.join(path.resolve(localExpandHome(dst.dir)), base);
             await engine.remoteToHub(srcSession, srcResolved, dstPath, {
@@ -336,17 +281,16 @@ wss.on('connection', (ws) => {
           // Remote -> remote: relay through the hub.
           const srcEp = resolveRef(src.endpoint);
           const dstEp = resolveRef(dst.endpoint);
-          const label = `${srcEp.id}:${basenameLoose(src.path)} -> ${dstEp.id}`;
-          send(ws, { type: 'job', id, mode, label });
           await pool.withSession(srcEp, async (srcSession) =>
             pool.withSession(dstEp, async (dstSession) => {
               const srcFs = new RemoteFs(srcSession);
-              const srcResolved = await srcFs.expandHome(src.path);
+              const srcResolved = await resolveRemotePath(srcFs, src.path);
               const base = overrideName ?? srcFs.path.basename(srcResolved);
               const dstFs = new RemoteFs(dstSession);
-              const dstDir = await dstFs.expandHome(dst.dir);
+              const dstDir = await resolveRemotePath(dstFs, dst.dir);
               const dstPath = dstFs.path.join(dstDir, base);
-              if (srcEp.id === dstEp.id && dstPath === srcResolved) {
+              if (connectionIdentity(srcEp) === connectionIdentity(dstEp)
+                && srcFs.path.isUnder(srcResolved, dstPath) && srcFs.path.isUnder(dstPath, srcResolved)) {
                 throw new Error('source and destination are the same path');
               }
               await engine.remoteToRemote(srcSession, srcResolved, dstSession, dstPath, {
@@ -366,12 +310,6 @@ wss.on('connection', (ws) => {
     }
   });
 });
-
-function basenameLoose(p: string): string {
-  const norm = p.replace(/\\/g, '/').replace(/\/+$/, '');
-  const idx = norm.lastIndexOf('/');
-  return idx >= 0 ? norm.slice(idx + 1) : norm;
-}
 
 server.listen(PORT, HOST, () => {
   // eslint-disable-next-line no-console

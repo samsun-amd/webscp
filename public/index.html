@@ -10,19 +10,23 @@
   <header>
     <h1>webscp</h1>
     <span id="conn-status" class="status">ws: connecting…</span>
-    <button id="manage-btn" title="Add, edit or remove saved machines">manage nodes</button>
-    <button id="reload-btn" title="Re-read config.json">reload inventory</button>
+    <button id="reload-btn" title="Re-read sshm_config groups">reload inventory</button>
   </header>
+  <div id="inventory-status" role="status"></div>
 
   <main>
     <section class="pane" id="pane-left" data-side="left">
       <div class="pane-head">
-        <select class="endpoint-select"></select>
-        <input class="path-input" type="text" placeholder="~" />
+        <select class="group-select" aria-label="Left group"></select>
+        <select class="endpoint-select" aria-label="Left endpoint"></select>
+        <button class="adhoc-btn" title="Connect by typing credentials">ad-hoc</button>
+      </div>
+      <div class="pane-head path-controls">
+        <input class="path-input" type="text" placeholder="~" aria-label="Left path" />
+        <select class="path-history" aria-label="Left recent paths"></select>
         <button class="go-btn">go</button>
         <button class="refresh-btn" title="Reload this pane">refresh</button>
         <button class="mkdir-btn" title="New folder">mkdir</button>
-        <button class="adhoc-btn" title="Connect by typing credentials">ad-hoc</button>
       </div>
       <div class="breadcrumb"></div>
       <ul class="file-list"></ul>
@@ -31,12 +35,16 @@
 
     <section class="pane" id="pane-right" data-side="right">
       <div class="pane-head">
-        <select class="endpoint-select"></select>
-        <input class="path-input" type="text" placeholder="~" />
+        <select class="group-select" aria-label="Right group"></select>
+        <select class="endpoint-select" aria-label="Right endpoint"></select>
+        <button class="adhoc-btn" title="Connect by typing credentials">ad-hoc</button>
+      </div>
+      <div class="pane-head path-controls">
+        <input class="path-input" type="text" placeholder="~" aria-label="Right path" />
+        <select class="path-history" aria-label="Right recent paths"></select>
         <button class="go-btn">go</button>
         <button class="refresh-btn" title="Reload this pane">refresh</button>
         <button class="mkdir-btn" title="New folder">mkdir</button>
-        <button class="adhoc-btn" title="Connect by typing credentials">ad-hoc</button>
       </div>
       <div class="breadcrumb"></div>
       <ul class="file-list"></ul>
@@ -52,7 +60,7 @@
     <ul id="queue-list"></ul>
   </section>
 
-  <!-- Modal host: populated by app.js (manage nodes / ad-hoc connect). -->
+  <!-- Modal host: ad-hoc connections and transfer conflicts. -->
   <div id="modal-overlay" class="modal-overlay hidden">
     <div id="modal" class="modal" role="dialog" aria-modal="true"></div>
   </div>

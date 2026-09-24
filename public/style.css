@@ -1,5 +1,8 @@
 * { box-sizing: border-box; }
 body {
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
   margin: 0;
   font-family: -apple-system, Segoe UI, Roboto, sans-serif;
   font-size: 14px;
@@ -29,10 +32,12 @@ main {
   display: flex;
   gap: 8px;
   padding: 8px;
-  height: calc(100vh - 48px - 160px);
+  flex: 1;
+  min-height: 0;
 }
 .pane {
   flex: 1;
+  min-width: 0;
   display: flex;
   flex-direction: column;
   background: #fff;
@@ -48,8 +53,12 @@ main {
   border-bottom: 1px solid #d0d7de;
   background: #f6f8fa;
 }
-.pane-head select { flex: 0 0 38%; }
-.pane-head .path-input { flex: 1; }
+.pane-head .group-select { flex: 0 1 28%; min-width: 0; }
+.pane-head .endpoint-select { flex: 1; min-width: 0; }
+.pane-head .path-input { flex: 1; min-width: 0; }
+.pane-head .path-history { flex: 0 1 28%; min-width: 0; }
+#inventory-status { font-size: 12px; color: #9a6700; padding: 4px 12px; max-height: 64px; overflow: auto; }
+#inventory-status:empty { display: none; }
 .pane-head input, .pane-head select {
   padding: 4px 6px;
   border: 1px solid #d0d7de;
@@ -93,6 +102,7 @@ main {
 .pane-msg { padding: 6px 10px; font-size: 12px; color: #cf222e; min-height: 18px; }
 #queue {
   height: 160px;
+  flex-shrink: 0;
   border-top: 1px solid #d0d7de;
   background: #fff;
   overflow-y: auto;
@@ -130,7 +140,7 @@ main {
 .job-done .bar > div { background: #0969da; }
 .job-error { color: #cf222e; }
 
-/* ---- modal (manage nodes / ad-hoc) ---- */
+/* ---- modal (ad-hoc connections and transfer conflicts) ---- */
 .hidden { display: none !important; }
 .modal-overlay {
   position: fixed;
@@ -167,27 +177,6 @@ main {
   color: #57606a;
   line-height: 1;
 }
-.node-rows { list-style: none; margin: 0 0 12px; padding: 0; }
-.node-rows li {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 6px 8px;
-  border: 1px solid #eaeef2;
-  border-radius: 6px;
-  margin-bottom: 6px;
-}
-.node-rows .node-name { font-weight: 600; }
-.node-rows .node-type {
-  font-size: 11px;
-  color: #fff;
-  background: #57606a;
-  border-radius: 10px;
-  padding: 1px 8px;
-}
-.node-rows .node-ep { flex: 1; font-size: 12px; color: #57606a; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.node-rows button { border: 1px solid #d0d7de; background: #fff; border-radius: 6px; padding: 2px 8px; cursor: pointer; }
-.node-rows button.danger { color: #cf222e; border-color: #f0c3c3; }
 .modal label { display: block; font-size: 12px; color: #57606a; margin: 8px 0 2px; }
 .modal input, .modal select {
   width: 100%;
@@ -211,19 +200,7 @@ main {
 .modal-actions .danger { background: #fff; color: #cf222e; border: 1px solid #f0c3c3; border-radius: 6px; padding: 6px 14px; cursor: pointer; }
 .modal p { margin: 4px 0; font-size: 13px; color: #1c2128; }
 .modal p.modal-sub { color: #57606a; }
-.host-row { display: flex; gap: 8px; align-items: flex-end; margin-bottom: 6px; }
-.host-row > div { flex: 1; }
-.host-row .rm-host { color: #cf222e; border: 1px solid #f0c3c3; background: #fff; border-radius: 6px; padding: 5px 9px; cursor: pointer; }
-.add-host { border: 1px dashed #d0d7de; background: #fff; border-radius: 6px; padding: 4px 10px; cursor: pointer; font-size: 12px; }
 .modal-err { color: #cf222e; font-size: 13px; min-height: 18px; margin-top: 8px; }
 .toggle-line { display: flex; align-items: center; gap: 6px; margin: 8px 0 0; }
 .toggle-line input { width: auto; }
 .toggle-line label { margin: 0; }
-.save-prompt {
-  display: flex; align-items: center; gap: 8px;
-  background: #ddf4ff; border: 1px solid #b6e3ff;
-  border-radius: 6px; padding: 6px 10px; margin: 6px 10px;
-  font-size: 13px;
-}
-.save-prompt button { border: 1px solid #d0d7de; background: #fff; border-radius: 6px; padding: 2px 10px; cursor: pointer; }
-.save-prompt .yes { background: #1f883d; color: #fff; border-color: #1a7f37; }

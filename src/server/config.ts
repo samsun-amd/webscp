@@ -1,15 +1,8 @@
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { Inventory, InventoryNode, resolveInventoryPath } from '@ssh-manager/core';
 
-/**
- * webscp's own configuration. Keeps all remote/connection info and server
- * binding in one place, with optional external ssh-manager group configuration.
- *
- * The real config.json holds private connection details and is git-ignored;
- * config.example.json is the committed template.
- */
+/** Local HTTP settings. SSH inventory is read only from SSHM_CONFIG_DIR. */
 export interface ServerConfig {
   /**
    * Allow connections from other machines.
@@ -30,16 +23,6 @@ export interface ServerConfig {
 
 export interface WebscpConfig {
   server?: ServerConfig;
-  /**
-   * Inline inventory — the preferred form. When present it is the single
-   * source of truth and no external file is read.
-   */
-  inventory?: InventoryNode[];
-  /**
-   * Alternative to inline: a path to an external inventory JSON (the same
-   * {group_number, nodes} shape sshm uses). A leading "~" expands against $HOME.
-   */
-  inventoryPath?: string;
 }
 
 const LOOPBACK_HOST = '127.0.0.1';
@@ -73,9 +56,6 @@ function readConfigFile(explicit?: string): WebscpConfig {
   if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
     throw new Error(`config.json must be a JSON object: ${file}`);
   }
-  if (parsed.inventory !== undefined && !Array.isArray(parsed.inventory)) {
-    throw new Error(`config.json inventory must be an array: ${file}`);
-  }
   return parsed as WebscpConfig;
 }
 
@@ -91,33 +71,9 @@ export function reloadConfig(explicit?: string): WebscpConfig {
   return cachedConfig;
 }
 
-/**
- * Build the inventory from configuration, with precedence:
- *   1. config.json `inventory` (inline nodes)
- *   2. config.json `inventoryPath` (external file)
- *   3. $SSH_REMOTE_JSON env var  (core default chain)
- *   4. ${SSHM_CONFIG_DIR:-~/sshm_config}/ssh_remote_default.json
- * External files require {group_number, nodes}; inline inventory stays an array.
- */
-export function loadInventory(explicitConfigPath?: string): Inventory {
-  const cfg = getConfig(explicitConfigPath);
-  if (cfg.inventory !== undefined) {
-    return new Inventory(cfg.inventory);
-  }
-  if (cfg.inventoryPath) {
-    return Inventory.load(expandHome(cfg.inventoryPath));
-  }
-  return Inventory.load(expandHome(resolveInventoryPath()));
-}
-
-/** Resolve the inventory source location for diagnostics/logging. */
-export function inventorySourceLabel(explicitConfigPath?: string): string {
-  const cfg = getConfig(explicitConfigPath);
-  if (cfg.inventory !== undefined) {
-    return `${resolveConfigPath(explicitConfigPath)} (inline)`;
-  }
-  if (cfg.inventoryPath) return expandHome(cfg.inventoryPath);
-  return expandHome(resolveInventoryPath());
+/** The same group directory used by sshm; app-local inventory is ignored. */
+export function inventorySourceLabel(): string {
+  return path.resolve(expandHome(process.env.SSHM_CONFIG_DIR || '~/sshm_config'));
 }
 
 /**

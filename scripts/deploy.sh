@@ -90,16 +90,21 @@ info "Building webscp…"
 # Validate exactly the source used by the runtime, including group metadata.
 info "Checking inventory configuration…"
 ( cd "$WEBSCP_DIR" && node <<'JS'
-const { loadInventory, inventorySourceLabel } = require('./dist/server/config');
+const { inventoryCatalog } = require('./dist/server/endpoints');
+const { inventorySourceLabel } = require('./dist/server/config');
 try {
-  const inventory = loadInventory();
-  console.log(`Inventory OK: ${inventorySourceLabel()} (${inventory.raw().length} nodes)`);
+  const catalog = inventoryCatalog();
+  for (const group of catalog.groups) {
+    if (group.error) console.warn(`${group.name}: ${group.error}`);
+  }
+  for (const warning of catalog.warnings) console.warn(warning);
+  console.log(`Inventory: ${inventorySourceLabel()} (${catalog.groups.length} groups)`);
 } catch (error) {
   console.error(error.message);
   process.exit(1);
 }
 JS
-) || die "Inventory validation failed. Configure config.json or convert the external inventory before installing the service."
+) || die "Inventory validation failed. Check SSHM_CONFIG_DIR and its group files before installing the service."
 
 # --- 5. systemd service ---
 if (( INSTALL_SYSTEMD )); then

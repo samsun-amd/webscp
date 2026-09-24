@@ -2,11 +2,15 @@
 
 export interface EndpointRef {
   /**
-   * "inventory" => resolve via the configured inventory; "adhoc" => explicit creds;
+   * "inventory" => resolve within an sshm group; "adhoc" => explicit creds;
    * "local" => the hub machine itself (Node fs, no SSH).
    */
   source: 'inventory' | 'adhoc' | 'local';
-  /** For inventory: selector (name/num/ip). */
+  /** Inventory group name (derived from its filename). */
+  group?: string;
+  /** Opaque revision; stale references must never resolve to a changed target. */
+  revision?: string;
+  /** For inventory: selector (name/num/ip). UI refs use 1-based node numbers. */
   selector?: string;
   /** For inventory: optional sub-target (bmc / smc / hostN). */
   sub?: string;
@@ -55,3 +59,16 @@ export type WsServerMessage =
 export type WsClientMessage =
   | { type: 'transfer'; reqId: string; payload: TransferRequest }
   | { type: 'cancel'; id: string };
+
+export interface EndpointOption {
+  key: string;
+  group: string;
+  label: string;
+  ref: EndpointRef;
+}
+
+export interface InventoryCatalog {
+  groups: Array<{ name: string; number?: number; error?: string }>;
+  options: EndpointOption[];
+  warnings: string[];
+}

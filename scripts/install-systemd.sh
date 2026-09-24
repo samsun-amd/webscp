@@ -21,7 +21,7 @@ const fs = require('node:fs');
 const [template, appDir, user] = process.argv.slice(2);
 // Quote systemd values and escape specifiers, including literal percent signs.
 const quote = (value) => JSON.stringify(value.replace(/%/g, '%%'));
-const overrides = ['WEBSCP_CONFIG', 'SSH_REMOTE_JSON', 'SSHM_CONFIG_DIR'];
+const overrides = ['WEBSCP_CONFIG', 'SSHM_CONFIG_DIR'];
 const replacements = {
   __APP_DIR__: quote(appDir),
   __ENTRY_POINT__: quote(`${appDir}/dist/server/index.js`),

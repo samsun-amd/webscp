@@ -22,8 +22,8 @@ test('systemd install preserves config overrides with systemd quoting', (t) => {
   };
   execFileSync('bash', ['scripts/install-systemd.sh'], { cwd: path.join(__dirname, '..'), env });
   const unit = fs.readFileSync(rendered, 'utf8');
-  for (const key of ['WEBSCP_CONFIG', 'SSH_REMOTE_JSON', 'SSHM_CONFIG_DIR']) {
+  for (const key of ['WEBSCP_CONFIG', 'SSHM_CONFIG_DIR']) {
     assert.ok(unit.includes(`Environment=${JSON.stringify(`${key}=${env[key]}`.replace(/%/g, '%%'))}`));
   }
-  assert.doesNotMatch(unit, /__[A-Z_]+__/);
+  assert.doesNotMatch(unit, /__[A-Z_]+__|Environment=.*SSH_REMOTE_JSON/);
 });
