@@ -20,8 +20,16 @@ function isLocal(ep: EndpointRef | undefined): boolean {
   return !!ep && ep.source === 'local';
 }
 
-/** Expand a leading `~` against the hub's own home directory. */
+/** Convert drive-absolute Windows paths for POSIX endpoints. */
+function normalizeInputPath(input: string, targetOs: 'posix' | 'windows'): string {
+  if (targetOs === 'windows' || !/^[a-z]:[\\/]/i.test(input)) return input;
+  // ponytail: assumes WSL's default /mnt mount root; add configuration if needed.
+  return `/mnt/${input[0].toLowerCase()}${input.slice(2).replace(/\\/g, '/')}`;
+}
+
+/** Normalize input and expand `~` against the hub's own home directory. */
 function localExpandHome(p: string): string {
+  p = normalizeInputPath(p, LOCAL_OS);
   const home = os.homedir();
   if (p === '~') return home;
   if (p.startsWith('~/') || p.startsWith('~\\')) return path.join(home, p.slice(2));
@@ -30,7 +38,7 @@ function localExpandHome(p: string): string {
 
 /** Use absolute, normalized paths for listings and transfer comparisons. */
 async function resolveRemotePath(rfs: RemoteFs, input: string): Promise<string> {
-  let resolved = await rfs.expandHome(input);
+  let resolved = await rfs.expandHome(normalizeInputPath(input, rfs.path.os));
   if (!rfs.path.isAbsolute(resolved)) resolved = rfs.path.join(await rfs.home(), resolved);
   return rfs.path.os === 'windows'
     ? path.win32.normalize(resolved).replace(/\\/g, '/') : path.posix.normalize(resolved);
@@ -159,7 +167,7 @@ app.post('/api/mkdir', async (req, res) => {
       return res.json({ ok: true });
     }
     const ep = resolveRef(req.body.endpoint as EndpointRef);
-    await pool.withSession(ep, async (s) => new RemoteFs(s).mkdirp(dir));
+    await pool.withSession(ep, async (s) => new RemoteFs(s).mkdirp(normalizeInputPath(dir, s.os || 'posix')));
     res.json({ ok: true });
   } catch (e) {
     res.status(errStatus(e)).json({ error: e instanceof Error ? e.message : String(e) });
@@ -175,7 +183,7 @@ app.post('/api/delete', async (req, res) => {
       return res.json({ ok: true });
     }
     const ep = resolveRef(req.body.endpoint as EndpointRef);
-    await pool.withSession(ep, async (s) => new RemoteFs(s).remove(target));
+    await pool.withSession(ep, async (s) => new RemoteFs(s).remove(normalizeInputPath(target, s.os || 'posix')));
     res.json({ ok: true });
   } catch (e) {
     res.status(errStatus(e)).json({ error: e instanceof Error ? e.message : String(e) });

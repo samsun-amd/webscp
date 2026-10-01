@@ -115,6 +115,28 @@ restored.
 - Transfers support byte progress and cancellation. SFTP and no-SFTP endpoints
   can be mixed; no-SFTP endpoints use exec streams through core.
 
+### Windows paths from File Explorer
+
+Copy a directory path from File Explorer's address bar, paste it directly into
+either pane's path input, then press Enter or click **go**. Do not add quotes,
+even when the path contains spaces.
+
+On POSIX endpoints (including Local under WSL), paths beginning with a drive
+letter and `:\` or `:/` are converted to WSL's default `/mnt/<drive>/...` format:
+
+| Pasted Windows path | Converted WSL path |
+|---|---|
+| `C:\html` | `/mnt/c/html` |
+| `C:\Users\chisun\OneDrive - Advanced Micro Devices Inc\Documents\Custom Office Templates` | `/mnt/c/Users/chisun/OneDrive - Advanced Micro Devices Inc/Documents/Custom Office Templates` |
+
+Drive letters become lowercase; folder names and spaces are preserved. Forward
+slashes are also accepted. Successful navigation displays the converted path
+and saves it in recent paths and workspace state. Windows endpoints retain
+Windows paths; existing POSIX paths and `~` keep their usual behavior.
+
+The drive must already be mounted at the corresponding path on the selected
+endpoint. Custom WSL mount roots are not detected automatically.
+
 ## Build and run
 
 Requires Node 18+ and the sibling ssh-manager checkout:
@@ -252,9 +274,10 @@ npm test
 ```
 
 Tests cover group discovery, stale refs, configuration precedence, read-only
-inventory APIs, transfer identity, and systemd rendering and restart dispatch
-without real SSH or service installation. The optional browser check uses an existing
-`puppeteer-core` installation and Chrome executable:
+inventory APIs, Windows-to-WSL path conversion, transfer identity, and systemd
+rendering and restart dispatch without real SSH or service installation.
+The optional browser check uses an existing `puppeteer-core` installation and
+Chrome executable:
 
 ```bash
 WEBSCP_BROWSER_MODULE=/path/to/node_modules/puppeteer-core \

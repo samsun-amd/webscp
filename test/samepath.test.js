@@ -9,7 +9,7 @@ const { once } = require('node:events');
 const WebSocket = require('ws');
 const { SshPool, RemoteFs, TransferEngine } = require('@ssh-manager/core');
 
-test('HTTP and WebSocket routes reject stale targets and self-copy across groups', async (t) => {
+test('HTTP and WebSocket routes normalize paths and reject stale targets and self-copy', async (t) => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'webscp-api-'));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   process.env.WEBSCP_CONFIG = path.join(dir, 'app.json');
@@ -47,6 +47,52 @@ test('HTTP and WebSocket routes reject stale targets and self-copy across groups
   });
   const catalog = await (await request('/api/endpoints', undefined, 'GET')).json();
   const ref = (group) => catalog.options.find((o) => o.group === group).ref;
+  const paths = [
+    [String.raw`C:\html`, '/mnt/c/html'],
+    [String.raw`C:\Users\chisun\OneDrive - Advanced Micro Devices Inc\Documents\Custom Office Templates`,
+      '/mnt/c/Users/chisun/OneDrive - Advanced Micro Devices Inc/Documents/Custom Office Templates'],
+    [String.raw`d:\Mixed Case\folder`, '/mnt/d/Mixed Case/folder'],
+    ['E:/folder with spaces', '/mnt/e/folder with spaces'],
+    ['C:\\', '/mnt/c/'],
+    ['/mnt/c/html', '/mnt/c/html'],
+    [String.raw`/tmp/literal\backslash`, String.raw`/tmp/literal\backslash`],
+  ];
+  const listed = t.mock.method(RemoteFs.prototype, 'list', async () => []);
+  for (const [input, expected] of [
+    ...paths, ['~', '/home/test'], ['relative/path', '/home/test/relative/path'],
+    ['C:relative', '/home/test/C:relative'],
+  ]) {
+    const response = await request('/api/list', { endpoint: ref('default'), path: input });
+    assert.equal(response.status, 200);
+    assert.equal((await response.json()).cwd, expected, input);
+    assert.equal(listed.mock.calls.at(-1).arguments[0], expected);
+  }
+  const windows = await request('/api/list', { endpoint: ref('windows'), path: String.raw`C:\html` });
+  assert.equal(windows.status, 200);
+  assert.equal((await windows.json()).cwd, 'C:/html');
+
+  // Verify Local conversion without requiring or modifying actual WSL mounts.
+  if (process.platform !== 'win32') {
+    const readdir = fs.readdirSync;
+    for (const [input, expected] of paths) {
+      const cwd = path.resolve(expected);
+      const mock = t.mock.method(fs, 'readdirSync', (dir, options) => dir === cwd ? [] : readdir(dir, options));
+      try {
+        const response = await request('/api/list', { endpoint: { source: 'local' }, path: input });
+        assert.equal(response.status, 200);
+        assert.equal((await response.json()).cwd, cwd, input);
+      } finally { mock.mock.restore(); }
+    }
+  }
+  for (const [route, method] of [['mkdir', 'mkdirp'], ['delete', 'remove']]) {
+    const mock = t.mock.method(RemoteFs.prototype, method, async () => {});
+    for (const group of ['default', 'windows']) {
+      const input = String.raw`C:\folder with spaces`;
+      const response = await request(`/api/${route}`, { endpoint: ref(group), path: input });
+      assert.equal(response.status, 200);
+      assert.equal(mock.mock.calls.at(-1).arguments[0], group === 'windows' ? input : '/mnt/c/folder with spaces');
+    }
+  }
   const transfer = async (src, dst) => {
     const ws = new WebSocket(base.replace('http:', 'ws:') + '/ws');
     await once(ws, 'open');
@@ -81,6 +127,14 @@ test('HTTP and WebSocket routes reject stale targets and self-copy across groups
   messages = await transfer({ endpoint: ref('windows'), path: 'C:/Data/Report.txt' }, { endpoint: ref('windows_alias'), dir: 'c:/data' });
   assert.match(messages.at(-1).message, /same path/);
   assert.equal(transfers, 1);
+  for (const [srcPath, dstDir] of [
+    [String.raw`C:\folder with spaces\file`, '/mnt/c/folder with spaces'],
+    ['/mnt/c/folder with spaces/file', String.raw`C:\folder with spaces`],
+  ]) {
+    messages = await transfer({ endpoint: ref('default'), path: srcPath }, { endpoint: ref('alias'), dir: dstDir });
+    assert.match(messages.at(-1).message, /same path/);
+    assert.equal(transfers, 1);
+  }
 
   for (const method of ['GET', 'POST', 'PUT', 'DELETE']) {
     const url = method === 'PUT' || method === 'DELETE' ? '/api/nodes/same' : '/api/nodes';
