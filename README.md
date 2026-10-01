@@ -65,6 +65,34 @@ before connecting. Reload preserves an unchanged target and its current path;
 removed or changed targets clear the old listing and require a new selection.
 Node reordering preserves selection when the target's identity is unchanged.
 
+## Workspace restore
+
+Each pane automatically remembers its group, endpoint, and last successfully
+opened path. Reopening a tab or refreshing the page restores both panes and
+fetches fresh directory listings. The panes retain independent paths even when
+they use the same endpoint. Endpoint selections use stable catalog keys and
+current inventory references, so node reordering and server restarts do not
+redirect a saved selection to another machine.
+
+Selections are saved immediately; paths are saved after successful navigation.
+Unsubmitted edits, failed navigation, and stale responses do not replace the
+last successful path. A newly selected endpoint starts at `~` until its first
+successful listing. Missing or changed endpoints require a new selection;
+unreachable endpoints and missing directories retain the restored selection
+and path with an error so you can retry or navigate elsewhere.
+
+Workspace state is stored in browser `localStorage` under `webscp.workspace.v1`,
+within the same browser profile and origin (scheme, hostname, and port).
+The latest saved user action wins across tabs; existing tabs keep their own
+views. Startup, inventory polling, and background refreshes do not overwrite
+another tab's workspace or reorder recent paths. Clearing site data removes
+the saved workspace. Invalid or unavailable storage does not prevent browsing.
+
+Only Local and inventory endpoints are restored. An ad-hoc pane reopens at
+Local home and needs a new connection; passwords and jump credentials are
+never saved. Transfer queues, open dialogs, and unsubmitted path input are not
+restored.
+
 ## Browsing and transfers
 
 - **Local** exposes the hub's own filesystem.
@@ -159,6 +187,12 @@ service or its environment. For a manually started process, run
 `./scripts/stop.sh` followed by `./scripts/start.sh` with the intended environment
 instead. Refresh the browser to load updated HTML, JavaScript, and CSS.
 
+When upgrading from a version without workspace restore, the first browser
+refresh resets the current group, endpoint, and path because the old page did
+not save them. Select your endpoints and open the desired paths once after
+loading the new version; subsequent refreshes and reopened tabs restore them
+automatically. Existing recent-path history remains available.
+
 To regenerate the service for the current checkout and user, run
 `./scripts/deploy.sh` without `--no-systemd`. This replaces the base unit and
 restarts the service; existing systemd drop-ins still apply. Sudo may prompt
@@ -227,7 +261,9 @@ WEBSCP_BROWSER_MODULE=/path/to/node_modules/puppeteer-core \
 WEBSCP_CHROME=/path/to/chrome npm test
 ```
 
-It verifies independent panes, selection after reordering, recent-path ordering,
-removal and persistence, keyboard access and dropdown dismissal, stale responses,
-and discovery of added/removed groups. SSH
+It verifies independent panes, workspace restore after closing tabs and restarting
+the server, selection after reordering, missing or changed endpoints, unavailable
+storage, multi-tab behavior, recent-path ordering, removal and persistence,
+keyboard access and dropdown dismissal, stale responses, and discovery of
+added/removed groups. SSH
 sessions are mocked; it does not connect to inventory machines.

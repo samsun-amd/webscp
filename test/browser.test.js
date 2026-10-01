@@ -8,9 +8,9 @@ const http = require('node:http');
 const { once } = require('node:events');
 
 // Optional real-browser check: point these variables at existing browser tools.
-test('browser: independent groups, reload safety, and persistent recent paths', {
+test('browser: independent groups, workspace restore, and persistent recent paths', {
   skip: !process.env.WEBSCP_BROWSER_MODULE || !process.env.WEBSCP_CHROME,
-  timeout: 30000,
+  timeout: 60000,
 }, async (t) => {
   const puppeteer = require(process.env.WEBSCP_BROWSER_MODULE);
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'webscp-browser-'));
@@ -34,7 +34,11 @@ test('browser: independent groups, reload safety, and persistent recent paths', 
   write('tw', 1, nodes);
   write('us', 2, nodes);
   const { SshPool, RemoteFs } = require('@ssh-manager/core');
-  SshPool.prototype.withSession = async (ep, fn) => fn({ endpoint: ep, os: 'posix' });
+  let unavailableHost;
+  SshPool.prototype.withSession = async (ep, fn) => {
+    if (ep.conn.host === unavailableHost) throw new Error('connection refused');
+    return fn({ endpoint: ep, os: 'posix' });
+  };
   RemoteFs.prototype.home = async () => '/home/test';
   let listCalls = 0;
   RemoteFs.prototype.list = async (cwd) => {
@@ -43,23 +47,34 @@ test('browser: independent groups, reload safety, and persistent recent paths', 
     if (cwd.endsWith('/slow')) await new Promise((resolve) => setTimeout(resolve, 150));
     return [{ name: 'folder', path: `${cwd}/folder`, type: 'dir', size: 0, mtime: null, mode: 0 }];
   };
-  const createServer = http.createServer;
-  http.createServer = (...args) => {
-    server = createServer(...args);
-    const listen = server.listen;
-    server.listen = (_port, host, callback) => listen.call(server, 0, host, callback);
-    return server;
+  const startServer = async (port = 0) => {
+    const createServer = http.createServer;
+    http.createServer = (...args) => {
+      server = createServer(...args);
+      const listen = server.listen;
+      server.listen = (_port, host, callback) => listen.call(server, port, host, callback);
+      return server;
+    };
+    try { require('../dist/server/index'); } finally { http.createServer = createServer; }
+    await once(server, 'listening');
   };
-  require('../dist/server/index');
-  http.createServer = createServer;
-  await once(server, 'listening');
+  await startServer();
   browser = await puppeteer.launch({ executablePath: process.env.WEBSCP_CHROME, headless: true, args: ['--no-sandbox'] });
-  const page = await browser.newPage();
-  await page.setViewport({ width: 1280, height: 900 });
   const errors = [];
-  page.on('pageerror', (e) => errors.push(e.message));
+  const requests = [];
   const url = `http://127.0.0.1:${server.address().port}`;
-  await page.goto(url);
+  const openPage = async () => {
+    const tab = await browser.newPage();
+    await tab.setViewport({ width: 1280, height: 900 });
+    tab.on('pageerror', (e) => errors.push(e.message));
+    tab.on('request', (req) => {
+      if (req.url() === `${url}/api/list`) requests.push(JSON.parse(req.postData()));
+    });
+    await tab.goto(url);
+    return tab;
+  };
+  let page = await openPage();
+  const workspace = () => page.evaluate(() => JSON.parse(localStorage.getItem('webscp.workspace.v1')));
   await page.waitForFunction(() => window.app?.panes.left.listedRef && window.app?.panes.right.listedRef);
   assert.equal(await page.$('#manage-btn'), null);
   await page.select('#pane-left .group-select', 'tw');
@@ -69,10 +84,10 @@ test('browser: independent groups, reload safety, and persistent recent paths', 
   await page.select('#pane-left .endpoint-select', second);
   await page.waitForFunction(() => window.app.panes.left.listedRef?.selector === '2');
 
-  const navigate = async (target) => {
-    await page.$eval('#pane-left .path-input', (input, value) => { input.value = value; }, target);
-    await page.click('#pane-left .go-btn');
-    await page.waitForFunction((value) => window.app.panes.left.cwd === value && window.app.panes.left.listedRef, {}, target);
+  const navigate = async (target, side = 'left') => {
+    await page.$eval(`#pane-${side} .path-input`, (input, value) => { input.value = value; }, target);
+    await page.click(`#pane-${side} .go-btn`);
+    await page.waitForFunction((value, name) => window.app.panes[name].cwd === value && window.app.panes[name].listedRef, {}, target, side);
   };
   await navigate('/a');
   await navigate('/b');
@@ -85,6 +100,19 @@ test('browser: independent groups, reload safety, and persistent recent paths', 
   const history = (side = 'left') => page.$$eval(`#pane-${side} .path-choice`, (items) => items.map((o) => o.value));
   assert.deepEqual((await history()).slice(0, 2), ['/a', '/b']);
   assert.ok(!(await history('right')).includes('/a'));
+
+  // A new tab restores each pane before making any default Local request.
+  await navigate('/right', 'right');
+  const initialWorkspace = await workspace();
+  assert.deepEqual(Object.keys(initialWorkspace.left).sort(), ['cwd', 'endpointKey', 'group']);
+  await page.close();
+  requests.length = 0;
+  page = await openPage();
+  await page.waitForFunction(() => window.app?.panes.left.listedRef && window.app.panes.right.listedRef);
+  assert.deepEqual(await workspace(), initialWorkspace);
+  assert.deepEqual(requests.map((r) => [r.endpoint.group, r.path]), [['tw', '/a'], ['us', '/right']]);
+  assert.equal(await page.$eval('#pane-left .endpoint-select', (s) => s.value), second);
+  assert.equal(await page.evaluate(() => window.app.panes.right.cwd), '/right');
 
   // Reordering updates the selector while preserving the selected target and path.
   write('tw', 1, [...nodes].reverse());
@@ -99,6 +127,7 @@ test('browser: independent groups, reload safety, and persistent recent paths', 
   await page.click('#pane-left .go-btn');
   await page.waitForFunction(() => document.querySelector('#pane-left .pane-msg').textContent === 'not found');
   assert.ok(!(await history()).includes('/missing'));
+  assert.equal((await workspace()).left.cwd, '/a');
   await page.evaluate(() => {
     const pane = window.app.panes.left;
     pane.pathInput.value = '/slow';
@@ -109,6 +138,7 @@ test('browser: independent groups, reload safety, and persistent recent paths', 
   await new Promise((resolve) => setTimeout(resolve, 200));
   assert.equal(await page.evaluate(() => window.app.panes.left.cwd), '/fast');
   assert.ok(!(await history()).includes('/slow'));
+  assert.equal((await workspace()).left.cwd, '/fast');
 
   // Native popover supports keyboard access, Escape, and outside dismissal.
   await page.focus('#pane-left .path-history-toggle');
@@ -140,10 +170,28 @@ test('browser: independent groups, reload safety, and persistent recent paths', 
   assert.equal(await page.evaluate(() => window.app.panes.right.cwd), '/home/test');
   assert.equal(await page.evaluate(() => document.activeElement.className), 'path-remove');
 
-  await page.reload();
-  await page.waitForFunction(() => window.app?.panes.left.listedRef);
-  await page.select('#pane-left .group-select', 'tw');
-  await page.waitForFunction(() => window.app.panes.left.listedRef?.group === 'tw');
+  // Restart the server and reorder inventory while the tab is closed. The two
+  // panes use one endpoint but must retain independent paths and fresh refs.
+  const beforeRestart = await workspace();
+  const historyBeforeRestart = await history();
+  const oldRevision = await page.evaluate(() => window.app.panes.left.listedRef.revision);
+  await page.$eval('#pane-left .path-input', (input) => { input.value = '/unsubmitted'; });
+  await page.close();
+  const port = server.address().port;
+  await new Promise((resolve) => { server.close(resolve); server.closeAllConnections(); });
+  delete require.cache[require.resolve('../dist/server/index')];
+  delete require.cache[require.resolve('../dist/server/endpoints')];
+  write('tw', 1, nodes);
+  await startServer(port);
+  requests.length = 0;
+  page = await openPage();
+  await page.waitForFunction(() => window.app?.panes.left.listedRef && window.app.panes.right.listedRef);
+  assert.deepEqual(await workspace(), beforeRestart);
+  assert.deepEqual(await history(), historyBeforeRestart);
+  assert.deepEqual(requests.map((r) => [r.endpoint.selector, r.path]), [['2', '/fast'], ['2', '/home/test']]);
+  assert.notEqual(await page.evaluate(() => window.app.panes.left.listedRef.revision), oldRevision);
+  assert.equal(await page.$eval('#pane-left .endpoint-select', (s) => s.value), second);
+  assert.equal(await page.evaluate(() => window.app.panes.right.cwd), '/home/test');
   assert.ok((await history()).includes('/a'));
   assert.ok(!(await history()).includes('/b'), 'history removal must survive page reload');
   await choosePath('/a');
@@ -179,6 +227,131 @@ test('browser: independent groups, reload safety, and persistent recent paths', 
     return box.width > 0 && box.left >= pane.left && box.right <= pane.right;
   }));
   assert.ok(visible, 'pane controls must remain visible and inside their pane');
+
+  // Missing, changed, and invalid inventory must never pick a replacement.
+  const unavailableWorkspace = await workspace();
+  const reopenUnavailable = async () => {
+    requests.length = 0;
+    await page.reload();
+    await page.waitForFunction(() => window.app?.panes.left.initialized && window.app.panes.right.initialized);
+    assert.equal(await page.evaluate(() => window.app.panes.left.currentRef()), null);
+    assert.match(await page.$eval('#pane-left .pane-msg', (e) => e.textContent), /no longer available/);
+    assert.deepEqual(requests, []);
+    assert.deepEqual(await workspace(), unavailableWorkspace);
+  };
+  await reopenUnavailable();
+  write('tw', 1, [nodes[0], { ...nodes[1], ip: '192.0.2.99' }]);
+  await reopenUnavailable();
+  fs.writeFileSync(path.join(dir, 'ssh_remote_tw.json'), '{');
+  await reopenUnavailable();
+  write('tw', 1, nodes);
+
+  // A directory removed while closed stays visible as an error; the other pane restores.
+  await page.evaluate(() => {
+    const saved = JSON.parse(localStorage.getItem('webscp.workspace.v1'));
+    saved.left.cwd = '/missing';
+    localStorage.setItem('webscp.workspace.v1', JSON.stringify(saved));
+  });
+  await page.reload();
+  await page.waitForFunction(() => document.querySelector('#pane-left .pane-msg').textContent === 'not found' && window.app.panes.right.listedRef);
+  assert.equal(await page.$eval('#pane-left .path-input', (e) => e.value), '/missing');
+  assert.equal((await workspace()).left.cwd, '/missing');
+
+  // A failed endpoint switch saves its selection immediately, never the old cwd.
+  unavailableHost = nodes[0].ip;
+  const first = await page.$eval('#pane-left .endpoint-select', (s) => [...s.options].find((o) => o.textContent.includes('first')).value);
+  await page.select('#pane-left .endpoint-select', first);
+  await page.waitForFunction(() => document.querySelector('#pane-left .pane-msg').textContent === 'connection refused');
+  assert.deepEqual((await workspace()).left, { group: 'tw', endpointKey: first, cwd: '~' });
+  await page.reload();
+  await page.waitForFunction(() => document.querySelector('#pane-left .pane-msg').textContent === 'connection refused' && window.app.panes.right.listedRef);
+  assert.equal(await page.$eval('#pane-left .endpoint-select', (s) => s.value), first);
+  assert.equal(await page.$eval('#pane-left .path-input', (e) => e.value), '~');
+  unavailableHost = undefined;
+  await navigate('/recovered');
+
+  // A late response from the old endpoint cannot overwrite a new selection.
+  await page.evaluate((key) => {
+    const pane = window.app.panes.left;
+    pane.pathInput.value = '/slow';
+    pane.refresh(true);
+    pane.select.value = key;
+    pane.select.dispatchEvent(new Event('change'));
+  }, second);
+  await page.waitForFunction(() => window.app.panes.left.listedRef?.selector === '2');
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  assert.deepEqual((await workspace()).left, { group: 'tw', endpointKey: second, cwd: '/home/test' });
+
+  // Another tab may save a workspace without moving this tab. Background work
+  // and startup never overwrite that newer snapshot or reorder recent paths.
+  const other = await openPage();
+  await other.waitForFunction(() => window.app?.panes.left.listedRef && window.app.panes.right.listedRef);
+  await other.evaluate(async () => {
+    const pane = window.app.panes.left;
+    pane.pathInput.value = '/other-tab';
+    await pane.refresh(true);
+  });
+  const otherWorkspace = await workspace();
+  assert.equal(otherWorkspace.left.cwd, '/other-tab');
+  assert.equal(await page.evaluate(() => window.app.panes.left.cwd), '/home/test');
+  await page.evaluate(async () => {
+    await window.app.loadEndpoints();
+    await Promise.all(Object.values(window.app.panes).map((pane) => pane.refresh()));
+  });
+  assert.deepEqual(await workspace(), otherWorkspace);
+  await other.close();
+
+  // Ad-hoc use replaces the saved pane with Local home, without any credentials.
+  await page.evaluate(() => window.app.panes.left.useAdhoc({ source: 'adhoc', adhoc: {
+    host: 'example', user: 'user', password: 'PRIVATE_SENTINEL',
+    jump: { host: 'jump', user: 'root', password: 'JUMP_SENTINEL' },
+  } }, 'ad-hoc test'));
+  await page.waitForFunction(() => window.app.panes.left.listedRef?.source === 'adhoc');
+  assert.deepEqual((await workspace()).left, { group: '', endpointKey: 'local', cwd: '~' });
+  assert.doesNotMatch(await page.evaluate(() => JSON.stringify(localStorage)), /PRIVATE_SENTINEL|JUMP_SENTINEL/);
+  await page.reload();
+  await page.waitForFunction(() => window.app?.panes.left.listedRef?.source === 'local' && window.app.panes.right.listedRef);
+
+  // Local paths use the same persistence rules as inventory endpoints.
+  await navigate(dir);
+  await page.reload();
+  await page.waitForFunction((cwd) => window.app?.panes.left.listedRef?.source === 'local'
+    && window.app.panes.left.cwd === cwd && window.app.panes.right.listedRef, {}, dir);
+  assert.deepEqual((await workspace()).left, { group: '', endpointKey: 'local', cwd: dir });
+
+  // Empty selections are intentional, and one malformed pane does not lose the other.
+  await page.select('#pane-left .group-select', 'default');
+  await page.reload();
+  await page.waitForFunction(() => window.app?.panes.left.initialized && window.app.panes.right.listedRef);
+  assert.equal(await page.$eval('#pane-left .group-select', (e) => e.value), 'default');
+  assert.equal(await page.evaluate(() => window.app.panes.left.currentRef()), null);
+  const validRight = (await workspace()).right;
+  await page.evaluate(() => {
+    const saved = JSON.parse(localStorage.getItem('webscp.workspace.v1'));
+    saved.left = { group: 'tw', endpointKey: 123, cwd: ['/bad'] };
+    localStorage.setItem('webscp.workspace.v1', JSON.stringify(saved));
+  });
+  await page.reload();
+  await page.waitForFunction(() => window.app?.panes.left.listedRef?.source === 'local' && window.app.panes.right.listedRef);
+  assert.equal(await page.$eval('#pane-right .endpoint-select', (e) => e.value), validRight.endpointKey);
+  for (const invalid of ['{', 'null', '[]']) {
+    await page.evaluate((value) => localStorage.setItem('webscp.workspace.v1', value), invalid);
+    await page.reload();
+    await page.waitForFunction(() => window.app?.panes.left.listedRef?.source === 'local' && window.app.panes.right.listedRef?.source === 'local');
+  }
+
+  // Browsing still works when both reads and writes to storage are denied.
+  const blockedStorage = await page.evaluateOnNewDocument(() => {
+    Storage.prototype.getItem = Storage.prototype.setItem = () => { throw new Error('Storage unavailable'); };
+  });
+  await page.reload();
+  await page.waitForFunction(() => window.app?.panes.left.listedRef?.source === 'local' && window.app.panes.right.listedRef?.source === 'local');
+  await page.select('#pane-left .group-select', 'us');
+  await page.waitForFunction(() => window.app.panes.left.listedRef?.group === 'us');
+  await navigate('/without-storage');
+  await page.removeScriptToEvaluateOnNewDocument(blockedStorage.identifier);
+  await page.reload();
+  await page.waitForFunction(() => window.app?.panes.left.listedRef && window.app.panes.right.listedRef);
   const fallback = await page.evaluate(() => {
     const original = Storage.prototype.setItem;
     Storage.prototype.setItem = () => { throw new Error('Storage unavailable'); };

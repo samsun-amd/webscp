@@ -50,6 +50,22 @@ async function reqJSON(method, url, body) {
 }
 function postJSON(url, body) { return reqJSON('POST', url, body); }
 
+const WORKSPACE_KEY = 'webscp.workspace.v1';
+function readWorkspace() {
+  const workspace = {};
+  try {
+    const saved = JSON.parse(localStorage.getItem(WORKSPACE_KEY));
+    for (const side of ['left', 'right']) {
+      const pane = saved?.[side];
+      if (pane && typeof pane.group === 'string' && typeof pane.endpointKey === 'string'
+        && typeof pane.cwd === 'string' && pane.cwd) {
+        workspace[side] = { group: pane.group, endpointKey: pane.endpointKey, cwd: pane.cwd };
+      }
+    }
+  } catch { /* Invalid or unavailable storage must not prevent browsing. */ }
+  return workspace;
+}
+
 const PathHistory = {
   memory: new Map(),
   read(key) {
@@ -159,9 +175,10 @@ const Modal = {
 
 // ---- pane model ----
 class Pane {
-  constructor(root, side) {
+  constructor(root, side, workspace = { group: '', endpointKey: 'local', cwd: '~' }) {
     this.root = root;
     this.side = side;
+    this.workspace = workspace;
     this.select = root.querySelector('.endpoint-select');
     this.groupSelect = root.querySelector('.group-select');
     this.pathInput = root.querySelector('.path-input');
@@ -171,7 +188,7 @@ class Pane {
     this.crumb = root.querySelector('.breadcrumb');
     this.msg = root.querySelector('.pane-msg');
     this.options = [];
-    this.cwd = '~';
+    this.cwd = workspace.cwd;
     this.os = 'posix';
     this.entries = [];
     this.refreshSeq = 0;
@@ -202,17 +219,11 @@ class Pane {
     });
     root.querySelector('.mkdir-btn').addEventListener('click', () => this.mkdir());
     root.querySelector('.adhoc-btn').addEventListener('click', () => Adhoc.open(this));
-    this.select.addEventListener('change', () => {
-      this.pathInput.value = '~';
-      this.renderHistory();
-      this.refresh(true);
-    });
+    this.select.addEventListener('change', () => this.changeEndpoint());
     this.groupSelect.addEventListener('change', () => {
       this.renderEndpoints();
       this.select.value = this.select.options[1]?.value || '';
-      this.pathInput.value = '~';
-      this.renderHistory();
-      this.refresh(true);
+      this.changeEndpoint();
     });
 
     // Drop target.
@@ -238,6 +249,17 @@ class Pane {
     return this.options.find((o) => o.key === this.select.value)?.ref || null;
   }
 
+  changeEndpoint() {
+    this.cwd = this.pathInput.value = '~';
+    // Ad-hoc credentials remain transient; reopen that pane at Local home.
+    this.workspace = this.select.value === 'adhoc'
+      ? { group: '', endpointKey: 'local', cwd: '~' }
+      : { group: this.groupSelect.value, endpointKey: this.select.value, cwd: '~' };
+    window.app.saveWorkspace();
+    this.renderHistory();
+    this.refresh(true);
+  }
+
   renderEndpoints() {
     const options = this.options.filter((o) => o.group === this.groupSelect.value);
     this.select.replaceChildren(
@@ -261,19 +283,20 @@ class Pane {
       })),
     );
     if (this.adhocRef) this.groupSelect.appendChild(el('option', { value: '@adhoc', text: 'Ad-hoc' }));
-    this.groupSelect.value = this.initialized ? group : '';
+    this.groupSelect.value = this.initialized ? group : this.workspace.group;
     this.renderEndpoints();
-    this.select.value = this.initialized ? selected : 'local';
+    this.select.value = this.initialized ? selected : this.workspace.endpointKey;
     const changed = oldRef !== JSON.stringify(this.currentRef());
     if (!this.initialized || changed || recover) {
       this.invalidate();
       if (this.currentRef()) {
-        this.pathInput.value = this.initialized ? this.cwd : '~';
-        this.refresh(!this.initialized);
+        this.pathInput.value = this.cwd;
+        this.refresh();
       } else {
         this.select.value = '';
         this.pathInput.value = '';
-        this.setMsg('Endpoint is no longer available. Select an endpoint.', true);
+        this.setMsg(this.workspace.endpointKey
+          ? 'Endpoint is no longer available. Select an endpoint.' : 'Select an endpoint.', true);
       }
     }
     this.initialized = true;
@@ -338,9 +361,7 @@ class Pane {
     this.groupSelect.value = '@adhoc';
     this.renderEndpoints();
     this.select.value = 'adhoc';
-    this.pathInput.value = '~';
-    this.renderHistory();
-    this.refresh(true);
+    this.changeEndpoint();
   }
 
   setMsg(text, isError) {
@@ -366,7 +387,11 @@ class Pane {
       this.pathInput.value = data.cwd;
       this.crumb.textContent = `${data.os} : ${data.cwd}`;
       this.render(data.entries);
-      if (remember) PathHistory.remember(historyKey, data.cwd);
+      if (ref.source !== 'adhoc') this.workspace.cwd = data.cwd;
+      if (remember) {
+        PathHistory.remember(historyKey, data.cwd);
+        window.app.saveWorkspace();
+      }
       window.app?.refreshHistories();
       this.setMsg('');
     } catch (e) {
@@ -494,9 +519,10 @@ const Adhoc = {
 // ---- app ----
 class App {
   constructor() {
+    const workspace = readWorkspace();
     this.panes = {
-      left: new Pane(document.getElementById('pane-left'), 'left'),
-      right: new Pane(document.getElementById('pane-right'), 'right'),
+      left: new Pane(document.getElementById('pane-left'), 'left', workspace.left),
+      right: new Pane(document.getElementById('pane-right'), 'right', workspace.right),
     };
     this.queue = document.getElementById('queue-list');
     this.ws = null;
@@ -508,7 +534,18 @@ class App {
     this.loadEndpoints();
     setInterval(() => { if (!document.hidden) this.loadEndpoints(); }, 5000);
     window.addEventListener('focus', () => this.loadEndpoints());
-    window.addEventListener('storage', () => { PathHistory.memory.clear(); this.refreshHistories(); });
+    window.addEventListener('storage', (e) => {
+      if (e.key === null || e.key.startsWith('webscp.paths:')) {
+        PathHistory.memory.clear();
+        this.refreshHistories();
+      }
+    });
+  }
+
+  saveWorkspace() {
+    const workspace = Object.fromEntries(Object.entries(this.panes).map(([side, pane]) => [side, pane.workspace]));
+    // Save user actions only: startup and background refreshes must not win across tabs.
+    try { localStorage.setItem(WORKSPACE_KEY, JSON.stringify(workspace)); } catch { /* Session-only workspace. */ }
   }
 
   // Remove finished transfers (done/error) from the list; keep active ones.
