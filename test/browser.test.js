@@ -8,7 +8,7 @@ const http = require('node:http');
 const { once } = require('node:events');
 
 // Optional real-browser check: point these variables at existing browser tools.
-test('browser: independent groups, workspace restore, and persistent recent paths', {
+test('browser: SCP tabs, workspace restore, independent groups, and persistent recent paths', {
   skip: !process.env.WEBSCP_BROWSER_MODULE || !process.env.WEBSCP_CHROME,
   timeout: 60000,
 }, async (t) => {
@@ -59,7 +59,9 @@ test('browser: independent groups, workspace restore, and persistent recent path
     await once(server, 'listening');
   };
   await startServer();
-  browser = await puppeteer.launch({ executablePath: process.env.WEBSCP_CHROME, headless: true, args: ['--no-sandbox'] });
+  const launch = () => puppeteer.launch({ executablePath: process.env.WEBSCP_CHROME,
+    userDataDir: path.join(dir, 'browser-profile'), headless: true, args: ['--no-sandbox'] });
+  browser = await launch();
   const errors = [];
   const requests = [];
   const url = `http://127.0.0.1:${server.address().port}`;
@@ -74,8 +76,15 @@ test('browser: independent groups, workspace restore, and persistent recent path
     return tab;
   };
   let page = await openPage();
-  const workspace = () => page.evaluate(() => JSON.parse(localStorage.getItem('webscp.workspace.v1')));
+  const savedTabs = () => page.evaluate(() => JSON.parse(localStorage.getItem('webscp.workspace.v2')));
+  const workspace = async () => {
+    const saved = await savedTabs();
+    const { left, right } = saved.tabs.find((tab) => tab.id === saved.activeTabId);
+    return { left, right };
+  };
   await page.waitForFunction(() => window.app?.panes.left.listedRef && window.app?.panes.right.listedRef);
+  const tabLabel = (id = 1) => page.$eval(`#workspace-tab-${id}`, (tab) => tab.textContent);
+  assert.equal(await tabLabel(), `localhost:${path.basename(os.homedir())} <-> localhost:${path.basename(os.homedir())}`);
   assert.equal(await page.$('#manage-btn'), null);
   await page.select('#pane-left .group-select', 'tw');
   await page.select('#pane-right .group-select', 'us');
@@ -89,6 +98,14 @@ test('browser: independent groups, workspace restore, and persistent recent path
     await page.click(`#pane-${side} .go-btn`);
     await page.waitForFunction((value, name) => window.app.panes[name].cwd === value && window.app.panes[name].listedRef, {}, target, side);
   };
+  const originalTab = await page.$('#workspace-tab-1');
+  await navigate('/');
+  assert.ok(await originalTab.evaluate((tab) => tab.isConnected), 'Updating a label must preserve the tab button');
+  await originalTab.dispose();
+  assert.equal(await tabLabel(), 'second:/ <-> first:test');
+  await navigate('/build/output files');
+  assert.equal(await tabLabel(), 'second:output files <-> first:test');
+  assert.equal(await page.$eval('#workspace-tab-1', (tab) => tab.title), 'second:/build/output files <-> first:/home/test');
   await navigate('/a');
   await navigate('/b');
   const choosePath = async (value) => {
@@ -101,8 +118,9 @@ test('browser: independent groups, workspace restore, and persistent recent path
   assert.deepEqual((await history()).slice(0, 2), ['/a', '/b']);
   assert.ok(!(await history('right')).includes('/a'));
 
-  // A new tab restores each pane before making any default Local request.
+  // A new browser tab restores each pane before making any default Local request.
   await navigate('/right', 'right');
+  assert.equal(await tabLabel(), 'second:a <-> first:right');
   const initialWorkspace = await workspace();
   assert.deepEqual(Object.keys(initialWorkspace.left).sort(), ['cwd', 'endpointKey', 'group']);
   await page.close();
@@ -113,6 +131,118 @@ test('browser: independent groups, workspace restore, and persistent recent path
   assert.deepEqual(requests.map((r) => [r.endpoint.group, r.path]), [['tw', '/a'], ['us', '/right']]);
   assert.equal(await page.$eval('#pane-left .endpoint-select', (s) => s.value), second);
   assert.equal(await page.evaluate(() => window.app.panes.right.cwd), '/right');
+  assert.equal(await tabLabel(), 'second:a <-> first:right');
+
+  // Each SCP tab owns both panes; inactive responses save only their own paths.
+  await page.click('#new-tab-btn');
+  await page.waitForFunction(() => window.app.panes.left.listedRef?.source === 'local' && window.app.panes.right.listedRef);
+  await page.select('#pane-left .group-select', 'us');
+  await page.waitForFunction(() => window.app.panes.left.listedRef?.group === 'us');
+  await navigate('/tab-two-left');
+  await navigate(dir, 'right');
+  await page.evaluate(async () => {
+    const pane = window.app.panes.left;
+    pane.pathInput.value = '/slow';
+    const pending = pane.refresh(true);
+    window.app.activateTab(1, true);
+    await pending;
+  });
+  assert.equal((await savedTabs()).tabs[1].left.cwd, '/slow');
+  assert.deepEqual(await workspace(), initialWorkspace);
+  await page.click('#workspace-tab-2');
+  await page.waitForFunction(() => window.app.panes.left.listedRef && window.app.panes.left.cwd === '/slow');
+  await navigate('/tab-two-left');
+  const twoTabs = await savedTabs();
+  assert.equal(twoTabs.activeTabId, 2);
+  assert.equal(twoTabs.tabs.length, 2);
+
+  // Closing the browser tab or the entire browser restores the same tab set.
+  await page.close();
+  page = await openPage();
+  await page.waitForFunction(() => window.app?.panes.left.listedRef && window.app.panes.right.listedRef);
+  assert.deepEqual(await savedTabs(), twoTabs);
+  assert.equal(await page.evaluate(() => window.app.activeTabId), 2);
+  await browser.close();
+  browser = await launch();
+  // Chrome may reopen old pages from the profile; close them before the new page.
+  await Promise.all((await browser.pages()).map((tab) => tab.close()));
+  requests.length = 0;
+  page = await openPage();
+  await page.waitForFunction(() => window.app?.panes.left.listedRef && window.app.panes.right.listedRef);
+  assert.deepEqual(await savedTabs(), twoTabs);
+  assert.deepEqual(requests.map((r) => r.path), ['/tab-two-left', dir]);
+  assert.equal(await page.$$eval('[role="tab"]', (tabs) => tabs.length), 2);
+  assert.equal(await page.$eval('[role="tab"][aria-selected="true"]', (tab) => tab.id), 'workspace-tab-2');
+  assert.equal(await tabLabel(), 'second:a <-> first:right');
+  assert.equal(await tabLabel(2), `first:tab-two-left <-> localhost:${path.basename(dir)}`);
+
+  // Keyboard switching restores the inactive tab; popovers and DOM IDs stay unique.
+  await page.focus('#workspace-tab-2');
+  await page.keyboard.press('ArrowLeft');
+  await page.waitForFunction(() => window.app.panes.left.listedRef && window.app.panes.left.cwd === '/a');
+  assert.deepEqual(await workspace(), initialWorkspace);
+  assert.equal(await page.evaluate(() => document.activeElement.id), 'workspace-tab-1');
+  await page.click('#pane-left .path-history-toggle');
+  await page.click('#workspace-tab-2');
+  assert.equal(await page.$(':popover-open'), null);
+  assert.equal(await page.$$eval('#pane-left', (panes) => panes.length), 1);
+  await page.keyboard.press('Home');
+  await page.waitForFunction(() => window.app.panes.left.listedRef && window.app.panes.right.listedRef);
+
+  // Transfers retain their original destination and shared queue when switching.
+  const transfer = await page.evaluate(async () => {
+    const app = window.app;
+    const sent = [];
+    const send = app.ws.send;
+    app.ws.send = (data) => sent.push(JSON.parse(data));
+    try {
+      const source = { endpoint: app.panes.left.listedRef, path: '/a/item.txt' };
+      const pending = app.onDrop(source, app.panes.right);
+      app.onWsMessage({ type: 'job', id: 'tab-transfer', label: 'Tab transfer', mode: 'relay' });
+      app.activateTab(2, true);
+      await pending;
+      return sent;
+    } finally { app.ws.send = send; }
+  });
+  assert.equal(transfer.length, 1);
+  assert.equal(transfer[0].payload.dst.dir, '/right');
+  assert.equal(transfer[0].payload.dst.endpoint.group, 'us');
+  assert.ok(await page.$('#tab-transfer .job-cancel'));
+  await page.waitForFunction(() => window.app.panes.left.listedRef && window.app.panes.right.listedRef);
+
+  // Closing an inactive tab must not cancel navigation in the active tab.
+  await page.click('#new-tab-btn');
+  await page.click('#workspace-tab-2');
+  await page.waitForFunction(() => window.app.panes.left.listedRef);
+  await page.evaluate(async () => {
+    const pane = window.app.panes.left;
+    pane.pathInput.value = '/slow';
+    const pending = pane.refresh(true);
+    window.app.closeTab(3);
+    await pending;
+  });
+  assert.equal((await savedTabs()).activeTabId, 2);
+  assert.equal((await savedTabs()).tabs.length, 2);
+  assert.equal((await workspace()).left.cwd, '/slow');
+  assert.equal(await page.evaluate(() => document.activeElement.id), 'workspace-tab-2');
+
+  // Closing a tab invalidates pending responses without cancelling queued transfers.
+  await page.evaluate(async () => {
+    const pane = window.app.panes.left;
+    pane.pathInput.value = '/slow';
+    const pending = pane.refresh(true);
+    window.app.closeTab(2);
+    await pending;
+  });
+  assert.equal((await savedTabs()).tabs.length, 1);
+  assert.deepEqual(await workspace(), initialWorkspace);
+  assert.ok(await page.$('#tab-transfer .job-cancel'));
+  await page.evaluate(() => window.app.onWsMessage({ type: 'done', id: 'tab-transfer' }));
+  assert.ok(await page.$('#tab-transfer.job-done'));
+  assert.equal(await page.$eval('.tab-close', (button) => button.disabled), true);
+  await page.reload();
+  await page.waitForFunction(() => window.app?.panes.left.listedRef && window.app.panes.right.listedRef);
+  assert.equal(await page.$$eval('[role="tab"]', (tabs) => tabs.length), 1);
 
   // Reordering updates the selector while preserving the selected target and path.
   write('tw', 1, [...nodes].reverse());
@@ -128,6 +258,7 @@ test('browser: independent groups, workspace restore, and persistent recent path
   await page.waitForFunction(() => document.querySelector('#pane-left .pane-msg').textContent === 'not found');
   assert.ok(!(await history()).includes('/missing'));
   assert.equal((await workspace()).left.cwd, '/a');
+  assert.equal(await tabLabel(), 'second:a <-> first:right');
   await page.evaluate(() => {
     const pane = window.app.panes.left;
     pane.pathInput.value = '/slow';
@@ -139,6 +270,7 @@ test('browser: independent groups, workspace restore, and persistent recent path
   assert.equal(await page.evaluate(() => window.app.panes.left.cwd), '/fast');
   assert.ok(!(await history()).includes('/slow'));
   assert.equal((await workspace()).left.cwd, '/fast');
+  assert.equal(await tabLabel(), 'second:fast <-> first:right');
 
   // Native popover supports keyboard access, Escape, and outside dismissal.
   await page.focus('#pane-left .path-history-toggle');
@@ -248,9 +380,9 @@ test('browser: independent groups, workspace restore, and persistent recent path
 
   // A directory removed while closed stays visible as an error; the other pane restores.
   await page.evaluate(() => {
-    const saved = JSON.parse(localStorage.getItem('webscp.workspace.v1'));
-    saved.left.cwd = '/missing';
-    localStorage.setItem('webscp.workspace.v1', JSON.stringify(saved));
+    const saved = JSON.parse(localStorage.getItem('webscp.workspace.v2'));
+    saved.tabs.find((tab) => tab.id === saved.activeTabId).left.cwd = '/missing';
+    localStorage.setItem('webscp.workspace.v2', JSON.stringify(saved));
   });
   await page.reload();
   await page.waitForFunction(() => document.querySelector('#pane-left .pane-msg').textContent === 'not found' && window.app.panes.right.listedRef);
@@ -307,7 +439,13 @@ test('browser: independent groups, workspace restore, and persistent recent path
     jump: { host: 'jump', user: 'root', password: 'JUMP_SENTINEL' },
   } }, 'ad-hoc test'));
   await page.waitForFunction(() => window.app.panes.left.listedRef?.source === 'adhoc');
+  assert.equal(await tabLabel(), 'example:test <-> second:test');
   assert.deepEqual((await workspace()).left, { group: '', endpointKey: 'local', cwd: '~' });
+  await page.click('#new-tab-btn');
+  await page.click('#workspace-tab-1');
+  await page.waitForFunction(() => window.app.panes.left.listedRef?.source === 'adhoc');
+  assert.equal(await page.evaluate(() => window.app.panes.left.adhocRef.adhoc.password), 'PRIVATE_SENTINEL');
+  await page.click('#workspace-close-2');
   assert.doesNotMatch(await page.evaluate(() => JSON.stringify(localStorage)), /PRIVATE_SENTINEL|JUMP_SENTINEL/);
   await page.reload();
   await page.waitForFunction(() => window.app?.panes.left.listedRef?.source === 'local' && window.app.panes.right.listedRef);
@@ -327,18 +465,40 @@ test('browser: independent groups, workspace restore, and persistent recent path
   assert.equal(await page.evaluate(() => window.app.panes.left.currentRef()), null);
   const validRight = (await workspace()).right;
   await page.evaluate(() => {
-    const saved = JSON.parse(localStorage.getItem('webscp.workspace.v1'));
-    saved.left = { group: 'tw', endpointKey: 123, cwd: ['/bad'] };
-    localStorage.setItem('webscp.workspace.v1', JSON.stringify(saved));
+    const saved = JSON.parse(localStorage.getItem('webscp.workspace.v2'));
+    saved.tabs.find((tab) => tab.id === saved.activeTabId).left = { group: 'tw', endpointKey: 123, cwd: ['/bad'] };
+    localStorage.setItem('webscp.workspace.v2', JSON.stringify(saved));
   });
   await page.reload();
   await page.waitForFunction(() => window.app?.panes.left.listedRef?.source === 'local' && window.app.panes.right.listedRef);
   assert.equal(await page.$eval('#pane-right .endpoint-select', (e) => e.value), validRight.endpointKey);
-  for (const invalid of ['{', 'null', '[]']) {
-    await page.evaluate((value) => localStorage.setItem('webscp.workspace.v1', value), invalid);
+  for (const invalid of ['{', 'null', '[]', '{"tabs":[]}', '{"tabs":[null,{"id":-1}]}']) {
+    await page.evaluate((value) => localStorage.setItem('webscp.workspace.v2', value), invalid);
     await page.reload();
     await page.waitForFunction(() => window.app?.panes.left.listedRef?.source === 'local' && window.app.panes.right.listedRef?.source === 'local');
   }
+
+  // Upgrade the original one-workspace format without losing either pane.
+  await page.evaluate((saved) => {
+    localStorage.removeItem('webscp.workspace.v2');
+    localStorage.setItem('webscp.workspace.v1', JSON.stringify(saved));
+  }, initialWorkspace);
+  await page.reload();
+  await page.waitForFunction(() => window.app?.panes.left.cwd === '/a' && window.app.panes.left.listedRef && window.app.panes.right.listedRef);
+  await page.click('#new-tab-btn');
+  const migrated = await savedTabs();
+  assert.deepEqual(migrated.tabs[0], { id: 1, ...initialWorkspace });
+  assert.equal(migrated.tabs.length, 2);
+  await page.evaluate(() => {
+    const saved = JSON.parse(localStorage.getItem('webscp.workspace.v2'));
+    saved.tabs.push(saved.tabs[0], null, { id: 'bad' });
+    saved.activeTabId = 999;
+    localStorage.setItem('webscp.workspace.v2', JSON.stringify(saved));
+  });
+  await page.reload();
+  await page.waitForFunction(() => window.app?.panes.left.listedRef && window.app.panes.right.listedRef);
+  assert.equal(await page.evaluate(() => window.app.tabs.length), 2);
+  assert.equal(await page.evaluate(() => window.app.activeTabId), 1);
 
   // Browsing still works when both reads and writes to storage are denied.
   const blockedStorage = await page.evaluateOnNewDocument(() => {
@@ -349,6 +509,10 @@ test('browser: independent groups, workspace restore, and persistent recent path
   await page.select('#pane-left .group-select', 'us');
   await page.waitForFunction(() => window.app.panes.left.listedRef?.group === 'us');
   await navigate('/without-storage');
+  await page.click('#new-tab-btn');
+  await page.click('#workspace-tab-1');
+  await page.waitForFunction(() => window.app.panes.left.cwd === '/without-storage' && window.app.panes.left.listedRef);
+  await page.click('#workspace-close-2');
   await page.removeScriptToEvaluateOnNewDocument(blockedStorage.identifier);
   await page.reload();
   await page.waitForFunction(() => window.app?.panes.left.listedRef && window.app.panes.right.listedRef);

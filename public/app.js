@@ -50,20 +50,40 @@ async function reqJSON(method, url, body) {
 }
 function postJSON(url, body) { return reqJSON('POST', url, body); }
 
-const WORKSPACE_KEY = 'webscp.workspace.v1';
+const WORKSPACE_KEY = 'webscp.workspace.v2';
+function readPanes(saved) {
+  const panes = {};
+  for (const side of ['left', 'right']) {
+    const pane = saved?.[side];
+    if (pane && typeof pane.group === 'string' && typeof pane.endpointKey === 'string'
+      && typeof pane.cwd === 'string' && pane.cwd) {
+      panes[side] = { group: pane.group, endpointKey: pane.endpointKey, cwd: pane.cwd };
+    }
+  }
+  return panes;
+}
+
 function readWorkspace() {
-  const workspace = {};
   try {
     const saved = JSON.parse(localStorage.getItem(WORKSPACE_KEY));
-    for (const side of ['left', 'right']) {
-      const pane = saved?.[side];
-      if (pane && typeof pane.group === 'string' && typeof pane.endpointKey === 'string'
-        && typeof pane.cwd === 'string' && pane.cwd) {
-        workspace[side] = { group: pane.group, endpointKey: pane.endpointKey, cwd: pane.cwd };
+    if (saved === null) {
+      const legacy = readPanes(JSON.parse(localStorage.getItem('webscp.workspace.v1')));
+      return { tabs: [{ id: 1, ...legacy }], activeTabId: 1 };
+    }
+    if (Array.isArray(saved?.tabs)) {
+      const ids = new Set();
+      const tabs = [];
+      for (const tab of saved.tabs) {
+        if (!Number.isSafeInteger(tab?.id) || tab.id < 1 || ids.has(tab.id)) continue;
+        ids.add(tab.id);
+        tabs.push({ id: tab.id, ...readPanes(tab) });
+      }
+      if (tabs.length) {
+        return { tabs, activeTabId: ids.has(saved.activeTabId) ? saved.activeTabId : tabs[0].id };
       }
     }
   } catch { /* Invalid or unavailable storage must not prevent browsing. */ }
-  return workspace;
+  return { tabs: [{ id: 1 }], activeTabId: 1 };
 }
 
 const PathHistory = {
@@ -210,7 +230,6 @@ class Pane {
         maxHeight: `${Math.min(320, window.innerHeight - box.bottom - 12)}px`,
       });
     });
-    window.addEventListener('resize', () => this.pathHistory.hidePopover());
     // refresh re-lists the current directory, ignoring any unsubmitted edits in
     // the path box (go navigates to the typed path; refresh reloads where we are).
     root.querySelector('.refresh-btn').addEventListener('click', () => {
@@ -340,7 +359,7 @@ class Pane {
       ])),
     );
     this.historyToggle.disabled = !paths.length;
-    if (!paths.length) this.pathHistory.hidePopover();
+    if (!paths.length && this.pathHistory.matches(':popover-open')) this.pathHistory.hidePopover();
   }
 
   invalidate() {
@@ -391,6 +410,8 @@ class Pane {
       if (remember) {
         PathHistory.remember(historyKey, data.cwd);
         window.app.saveWorkspace();
+      } else {
+        window.app.updateTabLabels();
       }
       window.app?.refreshHistories();
       this.setMsg('');
@@ -520,10 +541,12 @@ const Adhoc = {
 class App {
   constructor() {
     const workspace = readWorkspace();
-    this.panes = {
-      left: new Pane(document.getElementById('pane-left'), 'left', workspace.left),
-      right: new Pane(document.getElementById('pane-right'), 'right', workspace.right),
-    };
+    this.tabs = workspace.tabs;
+    this.panel = document.getElementById('workspace-panes');
+    this.paneTemplates = [...this.panel.children];
+    this.tabList = document.getElementById('workspace-tabs');
+    this.activateTab(workspace.activeTabId);
+    document.getElementById('new-tab-btn').addEventListener('click', () => this.addTab());
     this.queue = document.getElementById('queue-list');
     this.ws = null;
     this.connectWs();
@@ -534,6 +557,11 @@ class App {
     this.loadEndpoints();
     setInterval(() => { if (!document.hidden) this.loadEndpoints(); }, 5000);
     window.addEventListener('focus', () => this.loadEndpoints());
+    window.addEventListener('resize', () => {
+      for (const pane of Object.values(this.panes)) {
+        if (pane.pathHistory.matches(':popover-open')) pane.pathHistory.hidePopover();
+      }
+    });
     window.addEventListener('storage', (e) => {
       if (e.key === null || e.key.startsWith('webscp.paths:')) {
         PathHistory.memory.clear();
@@ -543,9 +571,124 @@ class App {
   }
 
   saveWorkspace() {
-    const workspace = Object.fromEntries(Object.entries(this.panes).map(([side, pane]) => [side, pane.workspace]));
+    const tabs = this.tabs.map((tab) => ({ id: tab.id, ...this.tabWorkspace(tab) }));
+    const workspace = { tabs, activeTabId: this.activeTabId };
     // Save user actions only: startup and background refreshes must not win across tabs.
     try { localStorage.setItem(WORKSPACE_KEY, JSON.stringify(workspace)); } catch { /* Session-only workspace. */ }
+    this.updateTabLabels();
+  }
+
+  tabWorkspace(tab) {
+    return tab.panes
+      ? Object.fromEntries(Object.entries(tab.panes).map(([side, pane]) => [side, pane.workspace]))
+      : readPanes(tab);
+  }
+
+  renderTabs() {
+    const focusedId = this.tabList.contains(document.activeElement) ? document.activeElement.id : null;
+    this.tabList.replaceChildren(...this.tabs.map((tab, index) => {
+      const active = tab.id === this.activeTabId;
+      return el('div', { class: 'workspace-tab', role: 'presentation' }, [
+        el('button', {
+          id: `workspace-tab-${tab.id}`, role: 'tab', type: 'button',
+          'aria-selected': String(active), 'aria-controls': 'workspace-panes', tabindex: active ? 0 : -1,
+          onclick: () => this.activateTab(tab.id, true),
+          onkeydown: (e) => {
+            let next;
+            if (e.key === 'ArrowRight') next = (index + 1) % this.tabs.length;
+            if (e.key === 'ArrowLeft') next = (index + this.tabs.length - 1) % this.tabs.length;
+            if (e.key === 'Home') next = 0;
+            if (e.key === 'End') next = this.tabs.length - 1;
+            if (next !== undefined) { e.preventDefault(); this.activateTab(this.tabs[next].id, true); }
+            if (e.key === 'Delete') { e.preventDefault(); this.closeTab(tab.id); }
+          },
+        }),
+        el('button', {
+          id: `workspace-close-${tab.id}`, class: 'tab-close', type: 'button', text: '×',
+          title: 'Close tab', tabindex: active ? 0 : -1, disabled: this.tabs.length === 1,
+          onclick: () => this.closeTab(tab.id),
+        }),
+      ]);
+    }));
+    this.updateTabLabels();
+    if (focusedId) document.getElementById(focusedId)?.focus();
+  }
+
+  updateTabLabels() {
+    for (const tab of this.tabs) {
+      const workspace = this.tabWorkspace(tab);
+      const sides = ['left', 'right'].map((side) => {
+        const pane = tab.panes?.[side];
+        const saved = workspace[side];
+        const key = saved?.endpointKey ?? 'local';
+        const endpoint = this.catalog?.options.find((o) => o.key === key);
+        const machine = pane?.currentRef()?.adhoc?.host || (key === 'local' ? 'localhost'
+          : endpoint?.label.replace(/^#\d+ /, '').replace(/ \(client\)$/, '')
+            || (key ? 'Unavailable' : 'Select endpoint'));
+        return { machine, path: pane?.cwd || saved?.cwd || '~' };
+      });
+      const label = sides.map(({ machine, path }) => `${machine}:${basename(path) || path}`).join(' <-> ');
+      const title = sides.map(({ machine, path }) => `${machine}:${path}`).join(' <-> ');
+      const button = document.getElementById(`workspace-tab-${tab.id}`);
+      button.textContent = label;
+      button.title = title;
+      button.nextElementSibling.setAttribute('aria-label', `Close ${label}`);
+    }
+  }
+
+  activateTab(id, remember = false) {
+    const tab = this.tabs.find((item) => item.id === id);
+    if (!tab) return;
+    const changed = id !== this.activeTabId;
+    for (const pane of Object.values(this.panes || {})) {
+      if (pane.pathHistory.matches(':popover-open')) pane.pathHistory.hidePopover();
+    }
+    const fresh = !tab.panes;
+    if (fresh) {
+      tab.panes = Object.fromEntries(this.paneTemplates.map((root) => {
+        const side = root.dataset.side;
+        return [side, new Pane(root.cloneNode(true), side, tab[side])];
+      }));
+    }
+    this.activeTabId = id;
+    this.panes = tab.panes;
+    if (changed) this.panel.replaceChildren(...Object.values(this.panes).map((pane) => pane.root));
+    this.panel.setAttribute('aria-labelledby', `workspace-tab-${id}`);
+    if (this.catalog && changed) {
+      if (fresh) {
+        for (const pane of Object.values(this.panes)) pane.setOptions(this.catalog);
+      } else {
+        this.refreshAll();
+      }
+    }
+    this.refreshHistories();
+    this.renderTabs();
+    if (remember) this.saveWorkspace();
+    if (remember) {
+      const button = document.getElementById(`workspace-tab-${id}`);
+      button.focus();
+      button.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+    }
+  }
+
+  addTab() {
+    const ids = new Set(this.tabs.map((tab) => tab.id));
+    let id = 1;
+    while (ids.has(id)) id += 1;
+    this.tabs.push({ id });
+    this.activateTab(id, true);
+  }
+
+  closeTab(id) {
+    const index = this.tabs.findIndex((tab) => tab.id === id);
+    if (index < 0 || this.tabs.length === 1) return;
+    const [tab] = this.tabs.splice(index, 1);
+    for (const pane of Object.values(tab.panes || {})) pane.invalidate();
+    this.activateTab(id === this.activeTabId ? this.tabs[Math.min(index, this.tabs.length - 1)].id : this.activeTabId, true);
+  }
+
+  allPanes() {
+    return this.tabs.flatMap((tab) => Object.values(tab.panes || {}));
   }
 
   // Remove finished transfers (done/error) from the list; keep active ones.
@@ -561,9 +704,10 @@ class App {
       this.applyCatalog(data);
     } catch (e) {
       if (seq !== this.loadSeq) return;
-      for (const pane of Object.values(this.panes)) pane.invalidate();
+      for (const pane of this.allPanes()) pane.invalidate();
       document.getElementById('inventory-status').textContent = `Inventory: ${e.message}`;
       this.lastCatalog = null;
+      this.catalog = null;
     }
   }
 
@@ -572,13 +716,15 @@ class App {
     if (signature === this.lastCatalog) return;
     const recover = this.lastCatalog === null;
     this.lastCatalog = signature;
-    for (const pane of Object.values(this.panes)) pane.setOptions(data, recover);
+    this.catalog = data;
+    for (const pane of this.allPanes()) pane.setOptions(data, recover);
+    this.updateTabLabels();
     const warnings = [...data.warnings, ...data.groups.filter((g) => g.error).map((g) => `${g.name}: ${g.error}`)];
     document.getElementById('inventory-status').textContent = warnings.join(' ');
   }
 
   refreshHistories() {
-    for (const pane of Object.values(this.panes)) pane.renderHistory();
+    for (const pane of this.allPanes()) pane.renderHistory();
   }
 
   async reload() {

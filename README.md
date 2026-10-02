@@ -1,8 +1,9 @@
 # webscp
 
-A two-pane web UI for browsing and copying files between SSH endpoints through
-a local hub. Each pane selects its own sshm group and endpoint. Transfers stream
-through the hub, so the two endpoints do not need to reach each other.
+A tabbed, two-pane web UI for browsing and copying files between SSH endpoints
+through a local hub. Each tab keeps its own pair of panes, and each pane selects
+its own sshm group and endpoint. Transfers stream through the hub, so the two
+endpoints do not need to reach each other.
 
 Built on [`@ssh-manager/core`](../ssh-manager/packages/core) for SSH connections,
 SFTP, OS-aware paths, and binary-safe exec streaming on endpoints without SFTP.
@@ -65,14 +66,33 @@ before connecting. Reload preserves an unchanged target and its current path;
 removed or changed targets clear the old listing and require a new selection.
 Node reordering preserves selection when the target's identity is unchanged.
 
-## Workspace restore
+## SCP tabs and workspace restore
 
-Each pane automatically remembers its group, endpoint, and last successfully
-opened path. Reopening a tab or refreshing the page restores both panes and
-fetches fresh directory listings. The panes retain independent paths even when
-they use the same endpoint. Endpoint selections use stable catalog keys and
-current inventory references, so node reordering and server restarts do not
-redirect a saved selection to another machine.
+The Chrome-style tab bar shares the top row with **webscp** and the connection
+status. Click **+** to open a tab with its own left and right panes, click a tab
+to switch workspaces, or click **×** to close it. At least one tab stays open.
+The bar scrolls horizontally when the tabs exceed the available space.
+
+Tab names follow `machine:folder <-> machine:folder` for the left and right panes,
+for example `build-host:images <-> server1 / bmc:tmp`. Names update after endpoint
+changes and successful navigation. The machine comes from the selected inventory
+endpoint, including its BMC, SMC, or host suffix where applicable. Local uses
+`localhost`, and ad-hoc connections use their host. The folder is the last path
+component; POSIX root remains `/`. Long names are truncated visually; hover over
+a tab to see both machines and their full paths.
+
+With a tab focused, use Left/Right Arrow or Home/End to switch, and Delete to
+close it. The selected tab has a white background, and keyboard focus remains
+visible. Hover transitions respect the browser's reduced-motion preference.
+
+The open tabs, their order, and the active tab are remembered automatically.
+Each pane remembers its group, endpoint, and last successfully opened path.
+Refreshing the page, reopening a browser tab, or restarting the browser restores
+the same workspaces. Directory listings load when a tab is opened or selected.
+The panes retain independent paths even when they use the same endpoint.
+Endpoint selections use stable catalog keys and current inventory references,
+so node reordering and server restarts do not redirect a saved selection to
+another machine.
 
 Selections are saved immediately; paths are saved after successful navigation.
 Unsubmitted edits, failed navigation, and stale responses do not replace the
@@ -81,17 +101,23 @@ successful listing. Missing or changed endpoints require a new selection;
 unreachable endpoints and missing directories retain the restored selection
 and path with an error so you can retry or navigate elsewhere.
 
-Workspace state is stored in browser `localStorage` under `webscp.workspace.v1`,
+Workspace state is stored in browser `localStorage` under `webscp.workspace.v2`,
 within the same browser profile and origin (scheme, hostname, and port).
-The latest saved user action wins across tabs; existing tabs keep their own
-views. Startup, inventory polling, and background refreshes do not overwrite
-another tab's workspace or reorder recent paths. Clearing site data removes
-the saved workspace. Invalid or unavailable storage does not prevent browsing.
+The previous `webscp.workspace.v1` workspace becomes the first SCP tab when
+upgrading; existing recent-path history is retained.
+Across separate browser tabs or windows, the latest saved user action wins;
+existing browser tabs keep their own views. Startup, inventory polling, and
+background refreshes do not overwrite another browser tab's workspace or reorder
+recent paths. Clearing site data removes the saved workspace. Invalid or
+unavailable storage does not prevent browsing.
 
-Only Local and inventory endpoints are restored. An ad-hoc pane reopens at
-Local home and needs a new connection; passwords and jump credentials are
-never saved. Transfer queues, open dialogs, and unsubmitted path input are not
-restored.
+Only Local and inventory endpoints are restored after a page reload. Ad-hoc
+connections stay available while switching SCP tabs in the current page, but
+reopen at Local home after a reload and need a new connection; passwords and
+jump credentials are never saved. The transfer queue is shared across SCP tabs;
+switching or closing an SCP tab does not cancel an already submitted transfer.
+Transfer queues, open dialogs, and unsubmitted path input are not restored after
+a page reload.
 
 ## Browsing and transfers
 
@@ -209,6 +235,10 @@ service or its environment. For a manually started process, run
 `./scripts/stop.sh` followed by `./scripts/start.sh` with the intended environment
 instead. Refresh the browser to load updated HTML, JavaScript, and CSS.
 
+When upgrading from the original single-workspace version, the saved left and
+right panes become the first SCP tab automatically. No endpoint reselection is
+needed, and existing recent-path history remains available.
+
 When upgrading from a version without workspace restore, the first browser
 refresh resets the current group, endpoint, and path because the old page did
 not save them. Select your endpoints and open the desired paths once after
@@ -284,9 +314,12 @@ WEBSCP_BROWSER_MODULE=/path/to/node_modules/puppeteer-core \
 WEBSCP_CHROME=/path/to/chrome npm test
 ```
 
-It verifies independent panes, workspace restore after closing tabs and restarting
-the server, selection after reordering, missing or changed endpoints, unavailable
+It verifies independent SCP tabs and panes, workspace restore after closing browser
+tabs and restarting the browser or server, migration from the original workspace,
+tab switching and closing during pending requests, shared transfer queues,
+machine/folder labels and full-path tooltips, stable tab buttons during label
+updates, selection after reordering, missing or changed endpoints, unavailable
 storage, multi-tab behavior, recent-path ordering, removal and persistence,
 keyboard access and dropdown dismissal, stale responses, and discovery of
-added/removed groups. SSH
-sessions are mocked; it does not connect to inventory machines.
+added/removed groups. SSH sessions are mocked; it does not connect to inventory
+machines.
