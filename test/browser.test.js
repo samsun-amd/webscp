@@ -76,6 +76,12 @@ test('browser: SCP tabs, workspace restore, independent groups, and persistent r
     return tab;
   };
   let page = await openPage();
+  await page.waitForFunction(() => window.app?.ws.readyState === WebSocket.OPEN);
+  await page.evaluate(() => window.app.ws.send('null'));
+  await page.waitForSelector('#queue-list [role="alert"]');
+  assert.match(await page.$eval('#queue-list [role="alert"]', el => el.textContent), /Request failed: Message must be an object/);
+  await page.click('#clear-queue-btn');
+  assert.equal(await page.$('#queue-list [role="alert"]'), null);
   const savedTabs = () => page.evaluate(() => JSON.parse(localStorage.getItem('webscp.workspace.v2')));
   const workspace = async () => {
     const saved = await savedTabs();

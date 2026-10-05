@@ -239,6 +239,11 @@ When upgrading from the original single-workspace version, the saved left and
 right panes become the first SCP tab automatically. No endpoint reselection is
 needed, and existing recent-path history remains available.
 
+When upgrading from a version without Origin checks, configure `server.allowedOrigins`
+before restarting if you use a remote URL or reverse proxy. Loopback browser access
+keeps working with the default configuration. Scripts that call POST APIs or open
+WebSockets must now send an allowed Origin and Host; missing Origin is rejected.
+
 When upgrading from a version without workspace restore, the first browser
 refresh resets the current group, endpoint, and path because the old page did
 not save them. Select your endpoints and open the desired paths once after
@@ -271,6 +276,56 @@ reports completion.
 `server.host` overrides `allowRemoteAccess`; setting `allowRemoteAccess: true`
 binds all interfaces. The app has no authentication: keep it on loopback, or
 put authentication and TLS in front of any remote exposure.
+
+### Browser Origin policy
+
+WebSocket `/ws` upgrades and HTTP POST requests require an allowed `Origin` and
+`Host`. Rejected requests receive HTTP 403 before their handlers run. By default,
+the allowed origins are `http://localhost:<listen-port>` and
+`http://127.0.0.1:<listen-port>`, plus `http://[::1]:<listen-port>` for an IPv6
+binding. The port is the actual listening port. Binding `0.0.0.0` does not
+automatically authorize any remote browser origin.
+
+Set `server.allowedOrigins` for an explicit public URL, for example:
+
+```json
+{
+  "server": {
+    "host": "127.0.0.1",
+    "port": 8088,
+    "allowedOrigins": ["https://files.example.com"]
+  }
+}
+```
+
+This list **replaces** the loopback defaults; add them explicitly if needed.
+An empty list denies all POST requests and WebSocket upgrades. Values must be
+serialized HTTP(S) origins: no trailing slash, path, query, fragment, userinfo,
+wildcard, or explicit default port (`:80` for HTTP, `:443` for HTTPS). Use lowercase
+hostnames and the browser's serialized origin. Invalid lists prevent startup.
+Restart after changing this setting; **reload inventory** does not change the
+active Origin policy or bind settings.
+
+The request Host must independently match an authority from the allowed origins.
+A reverse proxy must preserve the public Host, forward WebSocket upgrades, and
+provide authentication and TLS. `X-Forwarded-*` headers do not grant access.
+Proxies that rewrite Host to an unlisted backend authority receive HTTP 403.
+Restrict backend access to the trusted proxy; these checks are browser request
+protection, not authentication, and a native client can supply its own headers.
+
+### Transfer request validation
+
+WebSocket control messages are limited to 1 MiB. Invalid UTF-8 and oversized
+frames close the offending connection without stopping the server. Malformed
+JSON or transfer/cancel fields receive an error on the existing connection;
+request errors appear in the Transfers queue and can be cleared normally.
+
+Transfer requests require a nonempty `reqId`, valid source/destination endpoints,
+and nonempty paths without NUL. Optional `recursive` must be a boolean; only
+omission defaults to `true`. Destination `name`, when supplied, must be a single
+filename. Inventory references retain their group/revision checks, and ad-hoc
+credentials and jump fields are checked before acquiring SSH sessions. Invalid
+requests allocate no jobs and start no transfer filesystem or SSH work.
 
 ```bash
 SSHM_CONFIG_DIR=~/sshm_config ~/github/webscp/scripts/install-systemd.sh
@@ -306,6 +361,10 @@ npm test
 Tests cover group discovery, stale refs, configuration precedence, read-only
 inventory APIs, Windows-to-WSL path conversion, transfer identity, and systemd
 rendering and restart dispatch without real SSH or service installation.
+The server-boundary regression starts isolated child servers with temporary
+`WEBSCP_CONFIG` and `SSHM_CONFIG_DIR` settings. It verifies Origin/Host rejection,
+proxy configuration, malformed messages, recovery, transfer cleanup, cancellation,
+and invalid-frame containment. SSH is stubbed; local copies use temporary files.
 The optional browser check uses an existing `puppeteer-core` installation and
 Chrome executable:
 
@@ -321,5 +380,7 @@ machine/folder labels and full-path tooltips, stable tab buttons during label
 updates, selection after reordering, missing or changed endpoints, unavailable
 storage, multi-tab behavior, recent-path ordering, removal and persistence,
 keyboard access and dropdown dismissal, stale responses, and discovery of
-added/removed groups. SSH sessions are mocked; it does not connect to inventory
+added/removed groups, plus same-origin WebSocket connection and visible request
+errors. Run it with both environment variables set for security-fix acceptance;
+a skipped browser test is not acceptance. SSH sessions are mocked; it does not connect to inventory
 machines.

@@ -19,6 +19,8 @@ export interface ServerConfig {
   host?: string;
   /** Listen port. Default 8088. */
   port?: number;
+  /** Exact serialized HTTP(S) origins. Replaces loopback defaults; restart to apply. */
+  allowedOrigins?: string[];
 }
 
 export interface WebscpConfig {
@@ -69,6 +71,20 @@ export function getConfig(explicit?: string): WebscpConfig {
 export function reloadConfig(explicit?: string): WebscpConfig {
   cachedConfig = readConfigFile(explicit);
   return cachedConfig;
+}
+
+/** Capture and validate the browser allowlist once, like the bind settings. */
+export function browserOrigins(): string[] | undefined {
+  const origins = getConfig().server?.allowedOrigins;
+  if (origins === undefined) return undefined;
+  if (!Array.isArray(origins) || !origins.every((value: unknown) => {
+    if (typeof value !== 'string' || value.includes('*')) return false;
+    try {
+      const url = new URL(value);
+      return (url.protocol === 'http:' || url.protocol === 'https:') && url.origin === value;
+    } catch { return false; }
+  })) throw new Error('server.allowedOrigins must be an array of exact serialized HTTP(S) origins without paths or wildcards');
+  return origins;
 }
 
 /** The same group directory used by sshm; app-local inventory is ignored. */

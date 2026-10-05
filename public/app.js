@@ -796,7 +796,14 @@ class App {
       this.refreshAll();
     } else if (msg.type === 'error') {
       const li = document.getElementById(msg.id);
-      if (!li) return;
+      if (!li) {
+        const error = document.createElement('li');
+        error.className = 'job-error';
+        error.setAttribute('role', 'alert');
+        error.textContent = `Request failed: ${msg.message}`;
+        this.queue.prepend(error);
+        return;
+      }
       li.classList.add('job-error');
       li.querySelector('.job-pct').textContent = `error: ${msg.message}`;
       const c = li.querySelector('.job-cancel');

@@ -8,6 +8,50 @@ import { inventorySourceLabel } from './config';
 const revisionKey = randomBytes(32);
 const GROUP_NAME = /^[a-zA-Z0-9][a-zA-Z0-9_-]*$/;
 
+export function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+export function isNonemptyString(value: unknown): value is string {
+  return typeof value === 'string' && value.length > 0 && !value.includes('\0');
+}
+
+function validateCredentials(value: unknown): void {
+  if (!isRecord(value) || !isNonemptyString(value.host) || !value.host.trim()
+    || !isNonemptyString(value.user) || !value.user.trim()) {
+    throw new Error('SSH connection requires host and user strings');
+  }
+  if (value.port !== undefined && (typeof value.port !== 'number' || !Number.isInteger(value.port)
+    || value.port < 1 || value.port > 65535)) {
+    throw new Error('SSH requires an integer port from 1 to 65535');
+  }
+  if (value.password !== undefined && typeof value.password !== 'string') {
+    throw new Error('SSH password must be a string');
+  }
+}
+
+/** Validate every browser endpoint before inventory reads or SSH acquisition. */
+export function validateRef(ref: unknown): asserts ref is EndpointRef {
+  if (!isRecord(ref)) throw new Error('endpoint required');
+  if (ref.source === 'local') return;
+  if (ref.source === 'adhoc') {
+    validateCredentials(ref.adhoc);
+    const adhoc = ref.adhoc as Record<string, unknown>;
+    if (adhoc.os !== undefined && adhoc.os !== 'posix' && adhoc.os !== 'windows') {
+      throw new Error('SSH OS must be posix or windows');
+    }
+    if (adhoc.jump !== undefined) validateCredentials(adhoc.jump);
+    return;
+  }
+  if (ref.source !== 'inventory' || !isNonemptyString(ref.group)
+    || !isNonemptyString(ref.selector) || !isNonemptyString(ref.revision)) {
+    throw new Error('inventory endpoint requires group, selector, and revision strings');
+  }
+  if (ref.sub !== undefined && (typeof ref.sub !== 'string' || !/^(bmc|smc|host[1-9][0-9]*)$/.test(ref.sub))) {
+    throw new Error('Inventory sub-target must be bmc, smc, or hostN');
+  }
+}
+
 interface Group {
   name: string;
   number?: number;
@@ -66,10 +110,7 @@ export function connectionIdentity(endpoint: Endpoint): string {
 
 function validateEndpoint(endpoint: Endpoint): Endpoint {
   for (const c of [endpoint.conn, ...(endpoint.jump ? [endpoint.jump] : [])]) {
-    if (typeof c.host !== 'string' || !c.host.trim() || typeof c.user !== 'string' || !c.user.trim()
-      || !Number.isInteger(c.port) || c.port < 1 || c.port > 65535) {
-      throw new Error('Each SSH connection requires a host, user, and integer port from 1 to 65535');
-    }
+    validateCredentials(c);
   }
   return endpoint;
 }
@@ -126,16 +167,10 @@ export function inventoryCatalog(): InventoryCatalog {
 }
 
 /** Always check current inventory before using a browser reference. */
-export function resolveRef(ref: EndpointRef): Endpoint {
-  if (!ref || typeof ref !== 'object') throw new Error('endpoint required');
+export function resolveRef(ref: unknown): Endpoint {
+  validateRef(ref);
   if (ref.source === 'adhoc') {
-    if (!ref.adhoc?.host || !ref.adhoc.user) throw new Error('adhoc endpoint requires host and user');
-    for (const c of [ref.adhoc, ref.adhoc.jump]) {
-      if (c?.port !== undefined && (!Number.isInteger(c.port) || c.port < 1 || c.port > 65535)) {
-        throw new Error('SSH requires an integer port from 1 to 65535');
-      }
-    }
-    return validateEndpoint(adhocEndpoint(ref.adhoc));
+    return validateEndpoint(adhocEndpoint(ref.adhoc!));
   }
   if (ref.source !== 'inventory' || !ref.group || !ref.selector || !ref.revision) {
     throw new Error('inventory endpoint requires group, selector, and revision');

@@ -11,8 +11,8 @@ import {
   WsClientMessage,
   WsServerMessage,
 } from '../shared/types';
-import { inventoryCatalog, resolveRef, connectionIdentity } from './endpoints';
-import { serverSettings, inventorySourceLabel, reloadConfig } from './config';
+import { inventoryCatalog, resolveRef, connectionIdentity, isRecord, isNonemptyString, validateRef } from './endpoints';
+import { serverSettings, inventorySourceLabel, reloadConfig, browserOrigins } from './config';
 
 const LOCAL_OS: 'posix' | 'windows' = process.platform === 'win32' ? 'windows' : 'posix';
 
@@ -77,11 +77,25 @@ function localList(reqPath: string): ListResponse {
 }
 
 const { host: HOST, port: PORT, remote: REMOTE } = serverSettings();
+const configuredOrigins = browserOrigins();
+let allowedOrigins = new Set<string>();
+let allowedHosts = new Set<string>();
+
+function browserAllowed(req: http.IncomingMessage): boolean {
+  return typeof req.headers.origin === 'string' && allowedOrigins.has(req.headers.origin)
+    && typeof req.headers.host === 'string' && allowedHosts.has(req.headers.host);
+}
 
 const pool = new SshPool({ readyTimeoutMs: 15000, idleTimeoutMs: 60000, maxPerKey: 4 });
 const engine = new TransferEngine();
 
 const app = express();
+app.use((req, res, next) => {
+  if (req.method === 'POST' && !browserAllowed(req)) {
+    return res.status(403).json({ error: 'Browser Origin or Host is not allowed' });
+  }
+  next();
+});
 app.use(express.json({ limit: '1mb' }));
 app.use(express.static(path.join(__dirname, '../../public')));
 
@@ -191,7 +205,10 @@ app.post('/api/delete', async (req, res) => {
 });
 
 const server = http.createServer(app);
-const wss = new WebSocketServer({ server, path: '/ws' });
+const wss = new WebSocketServer({
+  server, path: '/ws', maxPayload: 1024 * 1024,
+  verifyClient: (info, done) => done(browserAllowed(info.req), 403, 'Forbidden'),
+});
 
 let jobCounter = 0;
 const activeJobs = new Map<string, AbortController>();
@@ -207,121 +224,132 @@ function send(ws: WebSocket, msg: WsServerMessage): void {
   }
 }
 
+function validateMessage(msg: unknown): asserts msg is WsClientMessage {
+  if (!isRecord(msg)) throw new Error('Message must be an object');
+  if (msg.type === 'cancel') {
+    if (!isNonemptyString(msg.id)) throw new Error('Cancel requires a job ID');
+    return;
+  }
+  if (msg.type !== 'transfer') throw new Error('Unknown message type');
+  if (!isNonemptyString(msg.reqId)) throw new Error('Transfer requires a request ID');
+  const payload = msg.payload;
+  if (!isRecord(payload) || !isRecord(payload.src) || !isRecord(payload.dst)
+    || !isNonemptyString(payload.src.path) || !isNonemptyString(payload.dst.dir)) {
+    throw new Error('Transfer requires source and destination paths');
+  }
+  if (payload.recursive !== undefined && typeof payload.recursive !== 'boolean') {
+    throw new Error('Recursive must be a boolean');
+  }
+  const name = payload.dst.name;
+  if (name !== undefined && (!isNonemptyString(name) || name === '.' || name === '..' || /[/\\]/.test(name))) {
+    throw new Error('Destination name must be a single filename');
+  }
+  validateRef(payload.src.endpoint);
+  validateRef(payload.dst.endpoint);
+}
+
 wss.on('connection', (ws) => {
+  // Protocol failures emit outside the message callback. Close only this socket.
+  ws.on('error', () => ws.terminate());
   ws.on('message', async (data) => {
-    let msg: WsClientMessage;
+    let id = '';
     try {
-      msg = JSON.parse(data.toString());
-    } catch {
-      return;
-    }
+      const msg: unknown = JSON.parse(data.toString());
+      validateMessage(msg);
+      if (msg.type === 'cancel') {
+        activeJobs.get(msg.id)?.abort();
+        return;
+      }
 
-    if (!msg || typeof msg !== 'object') return;
-
-    if (msg.type === 'cancel') {
-      activeJobs.get(msg.id)?.abort();
-      return;
-    }
-
-    if (msg.type === 'transfer') {
+      const { src, dst } = msg.payload;
+      const srcEp = isLocal(src.endpoint) ? null : resolveRef(src.endpoint);
+      const dstEp = isLocal(dst.endpoint) ? null : resolveRef(dst.endpoint);
       jobCounter += 1;
-      const id = `job-${jobCounter}`;
+      id = `job-${jobCounter}`;
       const ctrl = new AbortController();
       activeJobs.set(id, ctrl);
-      send(ws, { type: 'job', id, mode: 'relay', label: 'Transfer' });
-      try {
-        const { src, dst } = msg.payload || {};
-        if (!src?.endpoint || !dst?.endpoint || typeof src.path !== 'string' || !src.path
-          || typeof dst.dir !== 'string' || !dst.dir) throw new Error('Transfer requires source and destination paths');
-        const label = (ref: EndpointRef) => ref.source === 'inventory'
-          ? `${ref.group}/${ref.selector}${ref.sub ? `/${ref.sub}` : ''}` : ref.source;
-        send(ws, { type: 'job', id, mode: 'relay', label: `${label(src.endpoint)}:${src.path} -> ${label(dst.endpoint)}:${dst.dir}` });
-        const recursive = msg.payload.recursive ?? true;
-        const srcLocal = isLocal(src.endpoint);
-        const dstLocal = isLocal(dst.endpoint);
-        const onProgress = (p: { bytes: number; total: number | null; file: string }) =>
-          send(ws, { type: 'progress', id, bytes: p.bytes, total: p.total, file: p.file });
-        const overrideName = dst.name;
-        if (overrideName !== undefined && (typeof overrideName !== 'string' || !overrideName
-          || overrideName === '.' || overrideName === '..' || /[/\\\0]/.test(overrideName))) {
-          throw new Error('Destination name must be a single filename');
-        }
+      const label = (ref: EndpointRef) => ref.source === 'inventory'
+        ? `${ref.group}/${ref.selector}${ref.sub ? `/${ref.sub}` : ''}` : ref.source;
+      send(ws, { type: 'job', id, mode: 'relay', label: `${label(src.endpoint)}:${src.path} -> ${label(dst.endpoint)}:${dst.dir}` });
+      const recursive = msg.payload.recursive ?? true;
+      const onProgress = (p: { bytes: number; total: number | null; file: string }) =>
+        send(ws, { type: 'progress', id, bytes: p.bytes, total: p.total, file: p.file });
+      const overrideName = dst.name;
 
-        if (srcLocal && dstLocal) {
-          // Both ends are the hub: a plain local filesystem copy.
-          const srcResolved = path.resolve(localExpandHome(src.path));
-          const base = overrideName ?? path.basename(srcResolved);
-          const dstPath = path.join(path.resolve(localExpandHome(dst.dir)), base);
-          if (dstPath === srcResolved) {
-            throw new Error('source and destination are the same path');
-          }
-          fs.cpSync(srcResolved, dstPath, { recursive });
-        } else if (srcLocal) {
-          // Local -> remote: upload from the hub.
-          const dstEp = resolveRef(dst.endpoint);
-          const srcResolved = path.resolve(localExpandHome(src.path));
-          const base = overrideName ?? path.basename(srcResolved);
-          await pool.withSession(dstEp, async (dstSession) => {
-            const dstFs = new RemoteFs(dstSession);
-            const dstDir = await resolveRemotePath(dstFs, dst.dir);
-            const dstPath = dstFs.path.join(dstDir, base);
-            await engine.hubToRemote(srcResolved, dstSession, dstPath, {
-              recursive,
-              signal: ctrl.signal,
-              onProgress,
-            });
+      if (!srcEp && !dstEp) {
+        // Both ends are the hub: a plain local filesystem copy.
+        const srcResolved = path.resolve(localExpandHome(src.path));
+        const base = overrideName ?? path.basename(srcResolved);
+        const dstPath = path.join(path.resolve(localExpandHome(dst.dir)), base);
+        if (dstPath === srcResolved) {
+          throw new Error('source and destination are the same path');
+        }
+        fs.cpSync(srcResolved, dstPath, { recursive });
+      } else if (!srcEp) {
+        // Local -> remote: upload from the hub.
+        const srcResolved = path.resolve(localExpandHome(src.path));
+        const base = overrideName ?? path.basename(srcResolved);
+        await pool.withSession(dstEp!, async (dstSession) => {
+          const dstFs = new RemoteFs(dstSession);
+          const dstDir = await resolveRemotePath(dstFs, dst.dir);
+          const dstPath = dstFs.path.join(dstDir, base);
+          await engine.hubToRemote(srcResolved, dstSession, dstPath, {
+            recursive,
+            signal: ctrl.signal,
+            onProgress,
           });
-        } else if (dstLocal) {
-          // Remote -> local: download to the hub.
-          const srcEp = resolveRef(src.endpoint);
-          await pool.withSession(srcEp, async (srcSession) => {
+        });
+      } else if (!dstEp) {
+        // Remote -> local: download to the hub.
+        await pool.withSession(srcEp, async (srcSession) => {
+          const srcFs = new RemoteFs(srcSession);
+          const srcResolved = await resolveRemotePath(srcFs, src.path);
+          const base = overrideName ?? srcFs.path.basename(srcResolved);
+          const dstPath = path.join(path.resolve(localExpandHome(dst.dir)), base);
+          await engine.remoteToHub(srcSession, srcResolved, dstPath, {
+            recursive,
+            signal: ctrl.signal,
+            onProgress,
+          });
+        });
+      } else {
+        // Remote -> remote: relay through the hub.
+        await pool.withSession(srcEp, async (srcSession) =>
+          pool.withSession(dstEp, async (dstSession) => {
             const srcFs = new RemoteFs(srcSession);
             const srcResolved = await resolveRemotePath(srcFs, src.path);
             const base = overrideName ?? srcFs.path.basename(srcResolved);
-            const dstPath = path.join(path.resolve(localExpandHome(dst.dir)), base);
-            await engine.remoteToHub(srcSession, srcResolved, dstPath, {
+            const dstFs = new RemoteFs(dstSession);
+            const dstDir = await resolveRemotePath(dstFs, dst.dir);
+            const dstPath = dstFs.path.join(dstDir, base);
+            if (connectionIdentity(srcEp) === connectionIdentity(dstEp)
+              && srcFs.path.isUnder(srcResolved, dstPath) && srcFs.path.isUnder(dstPath, srcResolved)) {
+              throw new Error('source and destination are the same path');
+            }
+            await engine.remoteToRemote(srcSession, srcResolved, dstSession, dstPath, {
               recursive,
               signal: ctrl.signal,
               onProgress,
             });
-          });
-        } else {
-          // Remote -> remote: relay through the hub.
-          const srcEp = resolveRef(src.endpoint);
-          const dstEp = resolveRef(dst.endpoint);
-          await pool.withSession(srcEp, async (srcSession) =>
-            pool.withSession(dstEp, async (dstSession) => {
-              const srcFs = new RemoteFs(srcSession);
-              const srcResolved = await resolveRemotePath(srcFs, src.path);
-              const base = overrideName ?? srcFs.path.basename(srcResolved);
-              const dstFs = new RemoteFs(dstSession);
-              const dstDir = await resolveRemotePath(dstFs, dst.dir);
-              const dstPath = dstFs.path.join(dstDir, base);
-              if (connectionIdentity(srcEp) === connectionIdentity(dstEp)
-                && srcFs.path.isUnder(srcResolved, dstPath) && srcFs.path.isUnder(dstPath, srcResolved)) {
-                throw new Error('source and destination are the same path');
-              }
-              await engine.remoteToRemote(srcSession, srcResolved, dstSession, dstPath, {
-                recursive,
-                signal: ctrl.signal,
-                onProgress,
-              });
-            }),
-          );
-        }
-        send(ws, { type: 'done', id });
-      } catch (e) {
-        send(ws, { type: 'error', id, message: e instanceof Error ? e.message : String(e) });
-      } finally {
-        activeJobs.delete(id);
+          }),
+        );
       }
+      send(ws, { type: 'done', id });
+    } catch (e) {
+      send(ws, { type: 'error', id, message: e instanceof Error ? e.message : String(e) });
+    } finally {
+      if (id) activeJobs.delete(id);
     }
   });
 });
 
 server.listen(PORT, HOST, () => {
+  const address = server.address() as import('net').AddressInfo;
+  const hosts = ['localhost', '127.0.0.1', ...(address.family === 'IPv6' ? ['[::1]'] : [])];
+  allowedOrigins = new Set(configuredOrigins ?? hosts.map(host => new URL(`http://${host}:${address.port}`).origin));
+  allowedHosts = new Set([...allowedOrigins].map(origin => new URL(origin).host));
   // eslint-disable-next-line no-console
-  console.log(`webscp running on http://${HOST}:${PORT}`);
+  console.log(`webscp running on http://${HOST}:${address.port}`);
   // eslint-disable-next-line no-console
   console.log(`inventory source: ${inventorySourceLabel()}`);
   if (REMOTE) {

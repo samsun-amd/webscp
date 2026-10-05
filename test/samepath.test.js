@@ -43,7 +43,7 @@ test('HTTP and WebSocket routes normalize paths and reject stale targets and sel
   t.after(() => new Promise((resolve) => { server.close(resolve); server.closeAllConnections(); }));
   const base = `http://127.0.0.1:${server.address().port}`;
   const request = (url, body, method = 'POST') => fetch(base + url, {
-    method, headers: { 'Content-Type': 'application/json' }, body: body === undefined ? undefined : JSON.stringify(body),
+    method, headers: { 'Content-Type': 'application/json', Origin: base }, body: body === undefined ? undefined : JSON.stringify(body),
   });
   const catalog = await (await request('/api/endpoints', undefined, 'GET')).json();
   const ref = (group) => catalog.options.find((o) => o.group === group).ref;
@@ -94,7 +94,7 @@ test('HTTP and WebSocket routes normalize paths and reject stale targets and sel
     }
   }
   const transfer = async (src, dst) => {
-    const ws = new WebSocket(base.replace('http:', 'ws:') + '/ws');
+    const ws = new WebSocket(base.replace('http:', 'ws:') + '/ws', { origin: base });
     await once(ws, 'open');
     const messages = [];
     try {
