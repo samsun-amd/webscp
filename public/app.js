@@ -191,6 +191,21 @@ const Modal = {
       ]));
     });
   },
+  // Small yes/no dialog. Resolves true only when confirmed.
+  confirm(text, okLabel) {
+    return new Promise((resolve) => {
+      const done = (v) => { this.close(); resolve(v); };
+      const cancel = el('button', { class: 'secondary', text: 'cancel', onclick: () => done(false) });
+      this.open(el('div', { class: 'confirm' }, [
+        el('p', { text }),
+        el('div', { class: 'modal-actions' }, [
+          cancel,
+          el('button', { class: 'danger', text: okLabel, onclick: () => done(true) }),
+        ]),
+      ]));
+      cancel.focus();
+    });
+  },
 };
 
 // ---- pane model ----
@@ -444,6 +459,16 @@ class Pane {
         `<span class="name"></span>` +
         `<span class="size">${e.type === 'file' ? fmtSize(e.size) : ''}</span>`;
       li.querySelector('.name').textContent = e.name;
+      li.appendChild(el('span', { class: 'actions', ondblclick: (ev) => ev.stopPropagation() }, [
+        el('button', {
+          class: 'rename-btn', type: 'button', text: 'rename', title: `Rename ${e.name}`,
+          onclick: () => this.startRename(li, e),
+        }),
+        el('button', {
+          class: 'delete-btn', type: 'button', text: 'delete', title: `Delete ${e.name}`,
+          onclick: () => this.remove(e),
+        }),
+      ]));
 
       if (e.type === 'dir') {
         li.addEventListener('dblclick', () => {
@@ -475,6 +500,57 @@ class Pane {
     const sep = this.cwd.endsWith('/') ? '' : '/';
     try {
       await postJSON('/api/mkdir', { endpoint: ref, path: `${this.cwd}${sep}${name}` });
+      this.refresh();
+    } catch (e) {
+      this.setMsg(e.message, true);
+    }
+  }
+
+  // Explorer-style in-place rename: Enter or blur commits, Escape cancels.
+  startRename(li, entry) {
+    const ref = this.listedRef;
+    const nameSpan = li.querySelector('.name');
+    if (!ref || !nameSpan) return;
+    const input = el('input', {
+      class: 'rename-input', type: 'text', value: entry.name, 'aria-label': `New name for ${entry.name}`,
+      ondblclick: (ev) => ev.stopPropagation(),
+    });
+    li.draggable = false;
+    nameSpan.replaceWith(input);
+    input.focus();
+    // Preselect the name without its extension, as Explorer does.
+    const dot = entry.type === 'dir' ? -1 : entry.name.lastIndexOf('.');
+    input.setSelectionRange(0, dot > 0 ? dot : entry.name.length);
+    let finished = false;
+    const finish = async (commit) => {
+      // A re-rendered list detaches the input; never rename from a stale row.
+      if (finished || !input.isConnected) return;
+      finished = true;
+      const name = input.value.trim();
+      const restore = () => { input.replaceWith(nameSpan); li.draggable = true; };
+      if (!commit || !name || name === entry.name) { restore(); return; }
+      try {
+        await postJSON('/api/rename', { endpoint: ref, path: entry.path, name });
+        this.refresh();
+      } catch (e) {
+        restore();
+        this.setMsg(e.message, true);
+      }
+    };
+    input.addEventListener('keydown', (ev) => {
+      if (ev.key === 'Enter') finish(true);
+      else if (ev.key === 'Escape') finish(false);
+    });
+    input.addEventListener('blur', () => finish(true));
+  }
+
+  async remove(entry) {
+    const ref = this.listedRef;
+    if (!ref) return;
+    const what = entry.type === 'dir' ? `folder "${entry.name}" and everything in it` : `"${entry.name}"`;
+    if (!await Modal.confirm(`Delete ${what}?`, 'delete')) return;
+    try {
+      await postJSON('/api/delete', { endpoint: ref, path: entry.path });
       this.refresh();
     } catch (e) {
       this.setMsg(e.message, true);

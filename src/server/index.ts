@@ -204,6 +204,39 @@ app.post('/api/delete', async (req, res) => {
   }
 });
 
+function isFileName(name: unknown): name is string {
+  return isNonemptyString(name) && name !== '.' && name !== '..' && !/[/\\]/.test(name);
+}
+
+// Rename within the same directory; refuses to overwrite an existing entry.
+app.post('/api/rename', async (req, res) => {
+  try {
+    const target: string = req.body.path;
+    const name: unknown = req.body.name;
+    if (!target) return res.status(400).json({ error: 'path required' });
+    if (!isFileName(name)) return res.status(400).json({ error: 'Name must be a single filename' });
+    const taken = () => Object.assign(new Error(`"${name}" already exists`), { status: 409 });
+    if (isLocal(req.body.endpoint as EndpointRef)) {
+      const src = path.resolve(localExpandHome(target));
+      const dst = path.join(path.dirname(src), name);
+      if (fs.lstatSync(dst, { throwIfNoEntry: false })) throw taken();
+      fs.renameSync(src, dst);
+      return res.json({ ok: true });
+    }
+    const ep = resolveRef(req.body.endpoint as EndpointRef);
+    await pool.withSession(ep, async (s) => {
+      const rfs = new RemoteFs(s);
+      const src = await resolveRemotePath(rfs, target);
+      const dst = rfs.path.join(rfs.path.dirname(src), name);
+      if (await rfs.stat(dst).then(() => true, () => false)) throw taken();
+      await rfs.rename(src, dst);
+    });
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(errStatus(e)).json({ error: e instanceof Error ? e.message : String(e) });
+  }
+});
+
 const server = http.createServer(app);
 const wss = new WebSocketServer({
   server, path: '/ws', maxPayload: 1024 * 1024,
@@ -241,7 +274,7 @@ function validateMessage(msg: unknown): asserts msg is WsClientMessage {
     throw new Error('Recursive must be a boolean');
   }
   const name = payload.dst.name;
-  if (name !== undefined && (!isNonemptyString(name) || name === '.' || name === '..' || /[/\\]/.test(name))) {
+  if (name !== undefined && !isFileName(name)) {
     throw new Error('Destination name must be a single filename');
   }
   validateRef(payload.src.endpoint);

@@ -144,7 +144,7 @@ test('Origin and Host policy protects WebSocket upgrades and HTTP POST handlers'
   ];
   for (const headers of denied) assert.equal((await server.connect(headers)).status, 403, JSON.stringify(headers));
   const target = path.join(server.dir, 'must-not-exist');
-  for (const route of ['reload', 'connect-test', 'list', 'mkdir', 'delete']) {
+  for (const route of ['reload', 'connect-test', 'list', 'mkdir', 'delete', 'rename']) {
     const response = await fetch(server.base + '/api/' + route, {
       method: 'POST', headers: { Origin: 'https://untrusted.example.invalid', 'Content-Type': 'application/json' },
       body: JSON.stringify({ endpoint: { source: 'local' }, path: target }),

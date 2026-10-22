@@ -138,6 +138,11 @@ a page reload.
 - Drag files or directories between panes. Name conflicts offer replace or
   keep both. Same-connection, same-path copies are rejected even across groups;
   connection identity includes the destination and jump host, not node labels.
+- Each file and directory row has **rename** and **delete** buttons on the
+  right. **rename** edits the name in place like File Explorer: the name
+  without its extension is preselected, Enter or clicking away applies it, and
+  Escape cancels. Renaming never overwrites an existing entry. **delete** asks
+  for confirmation first; deleting a directory removes everything in it.
 - Transfers support byte progress and cancellation. SFTP and no-SFTP endpoints
   can be mixed; no-SFTP endpoints use exec streams through core.
 
@@ -359,7 +364,8 @@ npm test
 ```
 
 Tests cover group discovery, stale refs, configuration precedence, read-only
-inventory APIs, Windows-to-WSL path conversion, transfer identity, and systemd
+inventory APIs, Windows-to-WSL path conversion, rename name validation and
+overwrite refusal, transfer identity, and systemd
 rendering and restart dispatch without real SSH or service installation.
 The server-boundary regression starts isolated child servers with temporary
 `WEBSCP_CONFIG` and `SSHM_CONFIG_DIR` settings. It verifies Origin/Host rejection,

@@ -93,6 +93,33 @@ test('HTTP and WebSocket routes normalize paths and reject stale targets and sel
       assert.equal(mock.mock.calls.at(-1).arguments[0], group === 'windows' ? input : '/mnt/c/folder with spaces');
     }
   }
+  const renamed = t.mock.method(RemoteFs.prototype, 'rename', async () => {});
+  const existing = new Set(['/mnt/c/folder/taken.txt']);
+  t.mock.method(RemoteFs.prototype, 'stat', async (p) => {
+    if (!existing.has(p)) throw new Error('not found');
+    return { type: 'file' };
+  });
+  let response = await request('/api/rename', { endpoint: ref('default'), path: String.raw`C:\folder\a.txt`, name: 'b.txt' });
+  assert.equal(response.status, 200);
+  assert.deepEqual(renamed.mock.calls.at(-1).arguments, ['/mnt/c/folder/a.txt', '/mnt/c/folder/b.txt']);
+  response = await request('/api/rename', { endpoint: ref('default'), path: '/mnt/c/folder/a.txt', name: 'taken.txt' });
+  assert.equal(response.status, 409);
+  for (const name of ['', '.', '..', 'x/y', String.raw`x\y`, 7]) {
+    response = await request('/api/rename', { endpoint: ref('default'), path: '/mnt/c/folder/a.txt', name });
+    assert.equal(response.status, 400, String(name));
+  }
+  assert.equal(renamed.mock.callCount(), 1);
+  const localDir = path.join(dir, 'rename');
+  fs.mkdirSync(localDir);
+  fs.writeFileSync(path.join(localDir, 'a.txt'), 'a');
+  fs.writeFileSync(path.join(localDir, 'keep.txt'), 'keep');
+  response = await request('/api/rename', { endpoint: { source: 'local' }, path: path.join(localDir, 'a.txt'), name: 'keep.txt' });
+  assert.equal(response.status, 409);
+  assert.equal(fs.readFileSync(path.join(localDir, 'keep.txt'), 'utf8'), 'keep');
+  response = await request('/api/rename', { endpoint: { source: 'local' }, path: path.join(localDir, 'a.txt'), name: 'b.txt' });
+  assert.equal(response.status, 200);
+  assert.deepEqual(fs.readdirSync(localDir).sort(), ['b.txt', 'keep.txt']);
+
   const transfer = async (src, dst) => {
     const ws = new WebSocket(base.replace('http:', 'ws:') + '/ws', { origin: base });
     await once(ws, 'open');
